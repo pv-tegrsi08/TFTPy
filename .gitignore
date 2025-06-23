@@ -1,0 +1,42 @@
+# Ambientes virtuais
+venv/
+.env/
+.venv/
+
+# Arquivos e pastas do Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Cache do pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# VS Code
+.vscode/
+
+# Arquivos temporários do sistema
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Testes
+htmlcov/
+.tox/
+.coverage
+.cache/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Arquivos de pacotes
+*.egg
+*.egg-info/
+dist/
+build/
