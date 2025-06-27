@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-TFTPy a simple implementation of the TFTP protocol that can be used to transfer files between a client and a server.
-It supports both the get and put commands to download and upload files respectively.
+# TFTPy a simple implementation of the TFTP protocol that can be used to transfer files between a client and a server.
+# It supports both the get and put commands to download and upload files respectively.
 
-This client accepts these commands to interact with a server.
-    $ python3 client.py [-p serv_port] server
-    $ python3 client.py get [-p serv_port] server remote_file [local_file]
-    $ python3 client.py put [-p serv_port] server local_file [remote_file]
+# This server accepts these commands to interact with a client.
+#    $ python3 server.py [-p serv_port] server
+#    $ python3 client.py get [-p serv_port] server remote_file [local_file]
+#    $ python3 client.py put [-p serv_port] server local_file [remote_file]
 
 
 # Successfully tested on the following platforms:
@@ -29,7 +29,7 @@ Source code licensed under GPLv3. Please refer to:
 """
 
 def main():
-    print("This will be a TFTP client implementation.")
+    print("This will be a TFTP server implementation.")
     print("     see you soon...")
 #:
 
