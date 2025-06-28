@@ -60,9 +60,6 @@ class TFTPOpcode(Enum):
                 # accepted by the server. This is used to negotiate options
                 # like block size, timeout, and transfer mode before the actual
                 # data transfer begins.
-
-# Usage:
-# print(TFTPOpcode.RRQ)   # 1
 #:
 
 
@@ -76,10 +73,6 @@ class TFTPErrorCode(Enum):
     UNKNOWN_TRANSFER_ID = (5, "Unknown transfer ID.")
     FILE_EXISTS         = (6, "File already exists.")
     NO_SUCH_USER        = (7, "No such user.")
-
-# Usage:
-# print(TFTPErrorCode.FILE_NOT_FOUND.value)   # 1
-# print(TFTPErrorCode.FILE_NOT_FOUND.message) # "File not found"
 #:
 
 
@@ -88,7 +81,7 @@ class TFTPErrorCode(Enum):
 # SEND AND RECEIVE FILES
 #
 # ##############################################################################
-# O professor ?irá? ainda libertar vídeos de explicação e com walkthroughs
+# O professor irá? ainda libertar vídeos de explicação e com walkthroughs
 
 
 # ##############################################################################
@@ -97,19 +90,15 @@ class TFTPErrorCode(Enum):
 #
 # ##############################################################################
 # Endianness, Big-endian, Little-endian https://en.wikipedia.org/wiki/Endianness
-# Use '!H' for network protocols, such as TFTP, to ensure interoperability.
-# 'H' should only be used if you are certain all participants use the same
-# endianness (which is rare in networks).
-# c = struct.Struct('!H', TFTPOpcode.RRQ)
-
-# Talvez criar uma função genérica para empacotar e outra para desempacotar?
-# pack_into e unpack_from são mais eficientes. Usar na função genérica.
+#  RFC 1350 (TFTP):“Fields containing numbers are always in big-endian order
+#  Usar '!H' or '>H' em vez de 'H'? Sim, ver página 8 do enunciado.
+#
 # Criar uma classe de exceções personalizada para erros do TFTP?
 
 def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    rrq_fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
+    rrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
     return struct.pack(rrq_fmt, TFTPOpcode.RRQ.value, filename_bytes, mode_bytes)
 #:
 
@@ -117,24 +106,25 @@ def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
 def pack_wrq(filename, mode=DEFAULT_MODE) -> bytes:
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    wrq_fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
+    wrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
     return struct.pack(wrq_fmt, TFTPOpcode.WRQ.value, filename_bytes, mode_bytes)
 #:
+
 
 # struct.unpack() expects a fixed-size format string, so we need to handle
 #  variable-length strings manually.
 def unpack_rrq(packet: bytes) -> str:
     # Minimum size for RRQ packet is 4 bytes (opcode + 2 null-terminated strings)
     if len(packet) < 4:
-        raise ValueError("Invalid RRQ packet size")
+        raise ValueError("Invalid WRQ packet size.")
     
     # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('H', packet[:2])[0]
+    opcode = struct.unpack('!H', packet[:2])[0]
     if opcode != TFTPOpcode.RRQ.value:
-        raise ValueError("Invalid RRQ packet")
+        raise ValueError("Invalid RRQ packet.")
 
     # The rest of the packet contains the filename and mode, which are
-    #  null-terminated strings
+    #  null-terminated strings. mode is always 'octet' in this implementation.
     rest = packet[2:]
     filename = rest.split(b'\x00', 1)[0].decode()
     return filename
@@ -144,23 +134,77 @@ def unpack_rrq(packet: bytes) -> str:
 def unpack_wrq(packet: bytes) -> str:
     # Minimum size for WRQ packet is 4 bytes (opcode + 2 null-terminated strings)
     if len(packet) < 4:
-        raise ValueError("Invalid WRQ packet size")
+        raise ValueError("Invalid WRQ packet size.")
     
     # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('H', packet[:2])[0]
+    opcode = struct.unpack('!H', packet[:2])[0]
     if opcode != TFTPOpcode.WRQ.value:
-        raise ValueError("Invalid WRQ packet")
+        raise ValueError("Invalid WRQ packet.")
 
     # The rest of the packet contains the filename and mode, which are
-    #  null-terminated strings
+    #  null-terminated strings. mode is always 'octet' in this implementation.
     rest = packet[2:]
     filename = rest.split(b'\x00', 1)[0].decode()
     return filename
 #:
 
 
+# Generic functions to pack / unpack both RRQ and WRQ packets using the more
+#  efficient struct.pack_into() and struct.unpack_from() methods.
+def pack__rq_into(buffer: bytearray, offset: int, opcode: TFTPOpcode, filename: str, mode=DEFAULT_MODE) -> int:
+    # Packs a RRQ or a WRQ into the buffer at a specified offset.
+    filename_bytes = filename.encode() + b'\x00'
+    mode_bytes = mode.encode() + b'\x00'
+    fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
+    struct.pack_into(fmt, buffer, offset, opcode.value, filename_bytes, mode_bytes)
+    return struct.calcsize(fmt)  # Return the number of bytes packed into buffer
+#:
+
+
+def unpack__rq_from(buffer: bytes, offset=0) -> str:
+    # Unpacks a RRQ or a WRQ into the buffer at a specified offset.
+    if len(buffer) < offset + 4:
+        raise ValueError("Buffer too small for RRQ/WRQ packet.")
+    
+    opcode = struct.unpack_from('H', buffer, offset)[0]
+    if opcode not in (TFTPOpcode.RRQ.value, TFTPOpcode.WRQ.value):
+        raise ValueError("Invalid ?RQ packet")
+
+    offset += 2
+    end_filename = buffer.index(0, offset)
+    filename = buffer[offset:end_filename].decode()
+
+    # O seguinte código não é necessário se implementarmos apenas o 
+    #  transfer mode 'octet'. Falar com o Professor João Galamba.
+    # offset = end_filename + 1
+    # end_mode = buffer.index(0, offset)
+    # mode = buffer[offset:end_mode].decode()
+    # return filename, mode
+    return filename
+#:
+
+
 if __name__ == "__main__":
-    print(pack_rrq('ficheiro.txt'))     # b'\x01\x00ficheiro.txt\x00octet\x00'
-    print(pack_wrq('ficheiro.txt'))     # b'\x02\x00ficheiro.txt\x00octet\x00'
-    print(unpack_rrq(b'\x01\x00ficheiro.txt\x00octet\x00'))  # ficheiro.txt
-    print(unpack_wrq(b'\x02\x00ficheiro.txt\x00octet\x00'))  # ficheiro.txt
+    # Test the packing and unpacking functions
+    print(f"pack_rrq('ficheiro.txt'): {pack_rrq('ficheiro.txt')}")          # b'\x01\x00ficheiro.txt\x00octet\x00'
+    s = unpack_rrq(b'\x01\x00ficheiro.txt\x00octet\x00')
+    print(f"unpack_rrq(b''\\x01\\x00ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
+    print()
+    print(f"pack_wrq('ficheiro.txt'): {pack_wrq('ficheiro.txt')}")          # b'\x02\x00ficheiro.txt\x00octet\x00'
+    s = unpack_wrq(b'\x02\x00ficheiro.txt\x00octet\x00')
+    print(f"unpack_wrq(b''\\x02\\x00ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
+    print()
+
+    buffer = bytearray(512)
+    filename = "ficheiro.txt"
+    offset = 0
+    
+    print(f"Packing RRQ into buffer at offset {offset} for filename '{filename}'")
+    print('pack__rq_into(buffer, offset, TFTPOpcode.RRQ, filename)')
+    nbytes = pack__rq_into(buffer, offset, TFTPOpcode.RRQ, filename)
+    print(f"Bytes escritos: {nbytes}")
+    print(f"Buffer (hex): {buffer[:nbytes].hex()}")
+    print()
+
+    print(f"Unpacking from buffer at offset {offset}'")
+    print(f'unpack__rq_into(buffer, offset): {unpack__rq_from(buffer, offset)}')
