@@ -98,7 +98,7 @@ class TFTPErrorCode(Enum):
 def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    rrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
+    rrq_fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
     return struct.pack(rrq_fmt, TFTPOpcode.RRQ.value, filename_bytes, mode_bytes)
 #:
 
@@ -106,7 +106,7 @@ def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
 def pack_wrq(filename, mode=DEFAULT_MODE) -> bytes:
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    wrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
+    wrq_fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
     return struct.pack(wrq_fmt, TFTPOpcode.WRQ.value, filename_bytes, mode_bytes)
 #:
 
@@ -119,7 +119,7 @@ def unpack_rrq(packet: bytes) -> str:
         raise ValueError("Invalid WRQ packet size.")
     
     # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('!H', packet[:2])[0]
+    opcode = struct.unpack('H', packet[:2])[0]
     if opcode != TFTPOpcode.RRQ.value:
         raise ValueError("Invalid RRQ packet.")
 
@@ -137,7 +137,7 @@ def unpack_wrq(packet: bytes) -> str:
         raise ValueError("Invalid WRQ packet size.")
     
     # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('!H', packet[:2])[0]
+    opcode = struct.unpack('H', packet[:2])[0]
     if opcode != TFTPOpcode.WRQ.value:
         raise ValueError("Invalid WRQ packet.")
 
