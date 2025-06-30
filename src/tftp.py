@@ -90,8 +90,7 @@ class TFTPErrorCode(Enum):
 #
 # ##############################################################################
 # Endianness, Big-endian, Little-endian https://en.wikipedia.org/wiki/Endianness
-#  RFC 1350 (TFTP):“Fields containing numbers are always in big-endian order
-#  Usar '!H' or '>H' em vez de 'H'? Sim, ver página 8 do enunciado.
+# Usar '!H' or '>H' em vez de 'H'? Sim, ver página 8 do enunciado.
 #
 # Criar uma classe de exceções personalizada para erros do TFTP?
 
