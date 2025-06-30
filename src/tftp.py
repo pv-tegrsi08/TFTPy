@@ -98,7 +98,7 @@ class TFTPErrorCode(Enum):
 def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    rrq_fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
+    rrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
     return struct.pack(rrq_fmt, TFTPOpcode.RRQ.value, filename_bytes, mode_bytes)
 #:
 
@@ -106,7 +106,7 @@ def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
 def pack_wrq(filename, mode=DEFAULT_MODE) -> bytes:
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    wrq_fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
+    wrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
     return struct.pack(wrq_fmt, TFTPOpcode.WRQ.value, filename_bytes, mode_bytes)
 #:
 
@@ -119,7 +119,7 @@ def unpack_rrq(packet: bytes) -> str:
         raise ValueError("Invalid WRQ packet size.")
     
     # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('H', packet[:2])[0]
+    opcode = struct.unpack('!H', packet[:2])[0]
     if opcode != TFTPOpcode.RRQ.value:
         raise ValueError("Invalid RRQ packet.")
 
@@ -137,7 +137,7 @@ def unpack_wrq(packet: bytes) -> str:
         raise ValueError("Invalid WRQ packet size.")
     
     # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('H', packet[:2])[0]
+    opcode = struct.unpack('!H', packet[:2])[0]
     if opcode != TFTPOpcode.WRQ.value:
         raise ValueError("Invalid WRQ packet.")
 
@@ -155,7 +155,7 @@ def pack__rq_into(buffer: bytearray, offset: int, opcode: TFTPOpcode, filename: 
     # Packs a RRQ or a WRQ into the buffer at a specified offset.
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
-    fmt = f'H{len(filename_bytes)}s{len(mode_bytes)}s'
+    fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
     struct.pack_into(fmt, buffer, offset, opcode.value, filename_bytes, mode_bytes)
     return struct.calcsize(fmt)  # Return the number of bytes packed into buffer
 #:
@@ -166,7 +166,7 @@ def unpack__rq_from(buffer: bytes, offset=0) -> str:
     if len(buffer) < offset + 4:
         raise ValueError("Buffer too small for RRQ/WRQ packet.")
     
-    opcode = struct.unpack_from('H', buffer, offset)[0]
+    opcode = struct.unpack_from('!H', buffer, offset)[0]
     if opcode not in (TFTPOpcode.RRQ.value, TFTPOpcode.WRQ.value):
         raise ValueError("Invalid ?RQ packet")
 
@@ -187,12 +187,12 @@ def unpack__rq_from(buffer: bytes, offset=0) -> str:
 if __name__ == "__main__":
     # Test the packing and unpacking functions
     print(f"pack_rrq('ficheiro.txt'): {pack_rrq('ficheiro.txt')}")          # b'\x01\x00ficheiro.txt\x00octet\x00'
-    s = unpack_rrq(b'\x01\x00ficheiro.txt\x00octet\x00')
-    print(f"unpack_rrq(b''\\x01\\x00ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
+    s = unpack_rrq(b'\x00\x01\x00ficheiro.txt\x00octet')
+    print(f"unpack_rrq(b''\\x00\\x01\\x00ficheiro.txt\\x00octet'): {s}")    # ficheiro.txt
     print()
     print(f"pack_wrq('ficheiro.txt'): {pack_wrq('ficheiro.txt')}")          # b'\x02\x00ficheiro.txt\x00octet\x00'
-    s = unpack_wrq(b'\x02\x00ficheiro.txt\x00octet\x00')
-    print(f"unpack_wrq(b''\\x02\\x00ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
+    s = unpack_wrq(b'\x00\x02\x00ficheiro.txt\x00octet\x00')
+    print(f"unpack_wrq(b''\\x00\\x02\\x00ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
     print()
 
     buffer = bytearray(512)
