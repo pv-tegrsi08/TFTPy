@@ -30,6 +30,7 @@ Source code licensed under GPLv3. Please refer to:
 
 from enum import Enum
 import struct
+from utils import is_ascii_printable, TFTPValueError
 
 # ##############################################################################
 #
@@ -63,8 +64,17 @@ class TFTPOpcode(Enum):
 #:
 
 
-# TFTP error codes
-class TFTPErrorCode(Enum):
+# ##############################################################################
+#
+# ERROR AND EXCEPTIONS
+#
+# ##############################################################################
+
+# class TFTPValueError(ValueError):
+#     pass
+#:
+
+class TFTPError(Enum):
     NOT_DEFINED         = (0, "Not defined, see error message (if any).")
     FILE_NOT_FOUND      = (1, "File not found.")
     ACCESS_VIOLATION    = (2, "Access violation.")
@@ -91,63 +101,109 @@ class TFTPErrorCode(Enum):
 # ##############################################################################
 # Endianness, Big-endian, Little-endian https://en.wikipedia.org/wiki/Endianness
 #  Usar '!H' or '>H' em vez de 'H'? Sim, ver página 8 do enunciado.
+#  Parte4A_Pacotes.mp4 utiliza 'H' mas o Parte4B_Pacotes.mp4 já utiliza '!H'.
 #
-# Criar uma classe de exceções personalizada para erros do TFTP?
 
 def pack_rrq(filename, mode=DEFAULT_MODE) -> bytes:
+    return _pack_rq(TFTPOpcode.RRQ, filename, mode)
+#:
+
+def pack_wrq(filename, mode=DEFAULT_MODE) -> bytes:
+    return _pack_rq(TFTPOpcode.WRQ, filename, mode)
+#:
+
+def _pack_rq(opcode: TFTPOpcode, filename, mode=DEFAULT_MODE) -> bytes:
+    if not is_ascii_printable(filename):
+        raise TFTPValueError(f"Invalid filename: {filename}. Not ASCII printable")
+
     filename_bytes = filename.encode() + b'\x00'
     mode_bytes = mode.encode() + b'\x00'
     rrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
-    return struct.pack(rrq_fmt, TFTPOpcode.RRQ.value, filename_bytes, mode_bytes)
+    return struct.pack(rrq_fmt, opcode.value, filename_bytes, mode_bytes)
 #:
 
 
-def pack_wrq(filename, mode=DEFAULT_MODE) -> bytes:
-    filename_bytes = filename.encode() + b'\x00'
-    mode_bytes = mode.encode() + b'\x00'
-    wrq_fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
-    return struct.pack(wrq_fmt, TFTPOpcode.WRQ.value, filename_bytes, mode_bytes)
+def unpack_rrq(packet: bytes) -> tuple[str, str]:
+    return _unpack_rq(TFTPOpcode.RRQ, packet)
+#:
+
+def unpack_wrq(packet: bytes) -> tuple[str, str]:
+    return _unpack_rq(TFTPOpcode.WRQ, packet)
+#:
+
+def _unpack_rq(expected_opcode: TFTPOpcode, packet: bytes) -> tuple[str, str]:
+    received_opcode = unpack_opcode(packet)
+    if received_opcode.value != expected_opcode.value:
+        raise TFTPValueError(f"Invalid opcode: {received_opcode.value}. Expected {expected_opcode.value}")
+    delim_pos = packet.index(b'\x00', 2)
+    filename = packet[2:delim_pos].decode()
+    mode = packet[delim_pos + 1:-1].decode()
+    return filename, mode
 #:
 
 
-# struct.unpack() expects a fixed-size format string, so we need to handle
-#  variable-length strings manually.
-def unpack_rrq(packet: bytes) -> str:
-    # Minimum size for RRQ packet is 4 bytes (opcode + 2 null-terminated strings)
-    if len(packet) < 4:
-        raise ValueError("Invalid WRQ packet size.")
-    
-    # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('!H', packet[:2])[0]
-    if opcode != TFTPOpcode.RRQ.value:
-        raise ValueError("Invalid RRQ packet.")
-
-    # The rest of the packet contains the filename and mode, which are
-    #  null-terminated strings. mode is always 'octet' in this implementation.
-    rest = packet[2:]
-    filename = rest.split(b'\x00', 1)[0].decode()
-    return filename
+def unpack_opcode(packet: bytes) -> TFTPOpcode:
+    opcode, *_ = struct.unpack('!H', packet[:2])
+    # if opcode not in [e.value for e in TFTPOpcode]:           #  Alternativa 1
+    # if opcode not in TFTPOpcode._value2member_map_:           #  Alternativa 2
+    # if opcode not in TFTPOpcode._value2member_map_.keys():    #  Alternativa 3
+    try:                                                        #  Solução mais pythónica
+        return TFTPOpcode(opcode)
+    except ValueError:
+        raise TFTPValueError(f"Invalid opcode: {opcode}")
 #:
 
 
-def unpack_wrq(packet: bytes) -> str:
-    # Minimum size for WRQ packet is 4 bytes (opcode + 2 null-terminated strings)
-    if len(packet) < 4:
-        raise ValueError("Invalid WRQ packet size.")
-    
-    # Unpack the fixed-size part of the packet
-    opcode = struct.unpack('!H', packet[:2])[0]
-    if opcode != TFTPOpcode.WRQ.value:
-        raise ValueError("Invalid WRQ packet.")
+def pack_dat(block_number: int, data: bytes) -> bytes:
+    if len(data) > MAX_DATA_LEN:
+        raise TFTPValueError(f"Data length exceeds {MAX_DATA_LEN} bytes")
 
-    # The rest of the packet contains the filename and mode, which are
-    #  null-terminated strings. mode is always 'octet' in this implementation.
-    rest = packet[2:]
-    filename = rest.split(b'\x00', 1)[0].decode()
-    return filename
+    fmt = f'!H{len(data)}s'
+    return struct.pack(fmt, TFTPOpcode.DATA.value, block_number, data)
 #:
 
 
+def unpack_dat(packet: bytes) -> tuple[int, bytes]:
+    opcode, block_number = struct.unpack('!HH', packet[:4])
+    if opcode != TFTPOpcode.DATA.value:
+        raise TFTPValueError(f"Invalid opcode: {opcode}")
+    return block_number, packet[4:]
+#:
+
+
+def pack_ack(block_number: int) -> bytes:
+    return struct.pack('!HH', TFTPOpcode.ACK.value, block_number)
+#:
+
+def unpack_ack(packet: bytes) -> int:
+    if len(packet) > 4: # Creio que devia ser if len(packet) != 4 VERIFICAR
+        raise TFTPValueError(f"Invalid packet length: {len(packet)}")
+    return struct.unpack('!H', packet[2:4])[0]
+#:
+
+
+def pack_err(error_num: int, error_msg: str) -> bytes:
+    if not is_ascii_printable(error_msg):
+        raise TFTPValueError(f"Invalid error message: {error_msg}. Not ASCII printable")
+
+    error_msg_bytes = error_msg.encode() + b'\x00'
+    fmt = f'!HH{len(error_msg_bytes)}s'
+    return struct.pack(fmt, TFTPOpcode.ERROR.value, error_num, error_msg_bytes)
+#:
+
+
+def unpack_err(packet: bytes) -> tuple[int, str]:
+    fmt = f'!HH{len(packet)-4}s'
+    opcode, error_num, error_msg = struct.unpack(fmt, packet)
+    if opcode != TFTPOpcode.ERROR.value:
+        raise TFTPValueError(f"Invalid opcode: {opcode}")
+    return error_num, error_msg[:-1]
+#:
+
+
+# ##############################################################################
+# PACKET PACKING AND UNPACKING (ALTERNATIVE)
+# REVER
 # Generic functions to pack / unpack both RRQ and WRQ packets using the more
 #  efficient struct.pack_into() and struct.unpack_from() methods.
 def pack__rq_into(buffer: bytearray, offset: int, opcode: TFTPOpcode, filename: str, mode=DEFAULT_MODE) -> int:
@@ -160,7 +216,7 @@ def pack__rq_into(buffer: bytearray, offset: int, opcode: TFTPOpcode, filename: 
 #:
 
 
-def unpack__rq_from(buffer: bytes, offset=0) -> str:
+def unpack__rq_from(buffer: bytes, offset=0) -> tuple[str, str]:
     # Unpacks a RRQ or a WRQ into the buffer at a specified offset.
     if len(buffer) < offset + 4:
         raise ValueError("Buffer too small for RRQ/WRQ packet.")
@@ -207,3 +263,8 @@ if __name__ == "__main__":
 
     print(f"Unpacking from buffer at offset {offset}'")
     print(f'unpack__rq_into(buffer, offset): {unpack__rq_from(buffer, offset)}')
+
+    err = pack_err(2, "Access violation")
+    print(f"pack_err(2, 'Access violation'): {err}")
+    err_num, err_msg = unpack_err(err)
+    print(f"unpack_err(err): {err_num}, {err_msg}")
