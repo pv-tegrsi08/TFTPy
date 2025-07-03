@@ -30,7 +30,116 @@ Source code licensed under GPLv3. Please refer to:
 
 from enum import Enum
 import struct
-from utils import is_ascii_printable, TFTPValueError
+from socket import socket, AF_INET, SOCK_DGRAM
+import ipaddress
+import string
+import re
+
+
+################################################################################
+##
+##      ERRORS AND EXCEPTIONS
+##
+################################################################################
+
+class TFTPValueError(ValueError):
+    pass
+#:
+
+class NetworkError(Exception):
+    """
+    Any network error, like "host not found", timeouts, etc.
+    """
+#:
+
+class ProtocolError(NetworkError):
+    """
+    A protocol error like unexpected or invalid opcode, wrong block 
+    number, or any other invalid protocol parameter.
+    """
+#:
+
+class Err(Exception):
+    """
+    An error sent by the server. It may be caused because a read/write 
+    can't be processed. Read and write errors during file transmission 
+    also cause this message to be sent, and transmission is then 
+    terminated. The error number gives a numeric error code, followed 
+    by an ASCII error message that might contain additional, operating 
+    system specific information.
+    """
+    def __init__(self, error_code: int, error_msg: str):
+        super().__init__(f'TFTP Error {error_code}')
+        self.error_code = error_code
+        self.error_msg = error_msg
+    #:
+#:
+
+################################################################################
+##
+##      COMMON UTILITIES
+##      Mostly related to network tasks
+##
+################################################################################
+
+def _make_is_valid_hostname():
+    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
+    def _is_valid_hostname(hostname):
+        """
+        From: http://stackoverflow.com/questions/2532053/validate-a-hostname-string
+        See also: https://en.wikipedia.org/wiki/Hostname (and the RFC 
+        referenced there)
+        """
+        if not 0 < len(hostname) <= 255:
+            return False
+        if hostname[-1] == ".":
+            # strip exactly one dot from the right, if present
+            hostname = hostname[:-1]
+        return all(allowed.match(x) for x in hostname.split("."))
+    return _is_valid_hostname
+#:
+is_valid_hostname = _make_is_valid_hostname()
+
+def get_host_info(server_addr: str) -> tuple[str, str]:
+    """
+    Returns the server ip and hostname for server_addr. This param may
+    either be an IP address, in which case this function tries to query
+    its hostname, or vice-versa.
+    This functions raises a ValueError exception if the host name in
+    server_addr is ill-formed, and raises NetworkError if we can't get
+    an IP address for that host name.
+    TODO: refactor code...
+    """
+    try:
+        ipaddress.ip_address(server_addr)
+    except ValueError:
+        # server_addr not a valid ip address, then it might be a 
+        # valid hostname
+        if not is_valid_hostname(server_addr):
+            raise ValueError(f"Invalid hostname: {server_addr}.")
+        server_name = server_addr
+        try:
+            # gethostbyname_ex returns the following tuple: 
+            # (hostname, aliaslist, ipaddrlist)
+            server_ip = socket.gethostbyname_ex(server_name)[2][0]
+        except socket.gaierror:
+            raise NetworkError(f"Unknown server: {server_name}.")
+    else:  
+        # server_addr is a valid ip address, get the hostname
+        # if possible
+        server_ip = server_addr
+        try:
+            # returns a tuple like gethostbyname_ex
+            server_name = socket.gethostbyaddr(server_ip)[0]
+        except socket.herror:
+            server_name = ''
+    return server_ip, server_name
+#:
+
+def is_ascii_printable(txt: str) -> bool:
+    return set(txt).issubset(string.printable)
+    # ALTERNATIVA: return not set(txt) - set(string.printable)
+#:
 
 # ##############################################################################
 #
@@ -40,6 +149,8 @@ from utils import is_ascii_printable, TFTPValueError
 
 MAX_DATA_LEN = 512      # in bytes
 DEFAULT_MODE = "octet"  # transfer mode (one of 'octet', 'netascii', 'mail')
+INACTIVITY_TIMEOUT = 5
+DEFAULT_BUFFER_SIZE = 8192
 
 # TFTP message opcodes
 # https://datatracker.ietf.org/doc/html/rfc1350
@@ -70,10 +181,6 @@ class TFTPOpcode(Enum):
 #
 # ##############################################################################
 
-# class TFTPValueError(ValueError):
-#     pass
-#:
-
 class TFTPError(Enum):
     NOT_DEFINED         = (0, "Not defined, see error message (if any).")
     FILE_NOT_FOUND      = (1, "File not found.")
@@ -85,14 +192,52 @@ class TFTPError(Enum):
     NO_SUCH_USER        = (7, "No such user.")
 #:
 
+INET4Address = tuple[str, int]  # TCP/UDP address => IPv4 and port
 
 # ##############################################################################
 #
 # SEND AND RECEIVE FILES
 #
 # ##############################################################################
-# O professor irá? ainda libertar vídeos de explicação e com walkthroughs
 
+def get_file(server_addr: INET4Address, filename: str):
+    """
+    Get the remote file given by `filename` thougth a TFTP RRQ
+    connection to remote server at `server_addr`.
+    """
+    with socket(AF_INET, SOCK_DGRAM) as sock:
+        sock.settimeout(INACTIVITY_TIMEOUT)
+        with open(filename, 'wb') as out_file:
+            rqq = pack_rrq(filename)
+            next_block_number = 1
+            sock.sendto(rqq, server_addr)
+
+            while True:
+                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                opcode = unpack_opcode(packet)
+
+                if opcode == TFTPOpcode.DATA:
+                    block_number, data = unpack_dat(packet)
+
+                    if block_number not in (next_block_number, next_block_number - 1):
+                        error_msg = f'Invalid block number: {block_number}'
+                        raise ProtocolError(error_msg)
+                    out_file.write(data)
+                    next_block_number += 1
+
+                    ack = pack_ack(block_number)
+                    sock.sendto(ack, server_address)
+
+                    if len(data) < MAX_DATA_LEN:
+                        return
+
+                elif opcode == TFTPOpcode.ERROR:
+                    err_code, err_msg = unpack_err(packet)
+                    raise Err(err_code, err_msg)
+
+                else:
+                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
+                    raise ProtocolError(error_msg)
 
 # ##############################################################################
 #
@@ -191,7 +336,6 @@ def pack_err(error_num: int, error_msg: str) -> bytes:
     return struct.pack(fmt, TFTPOpcode.ERROR.value, error_num, error_msg_bytes)
 #:
 
-
 def unpack_err(packet: bytes) -> tuple[int, str]:
     fmt = f'!HH{len(packet)-4}s'
     opcode, error_num, error_msg = struct.unpack(fmt, packet)
@@ -240,31 +384,34 @@ def unpack__rq_from(buffer: bytes, offset=0) -> tuple[str, str]:
 
 
 if __name__ == "__main__":
-    # Test the packing and unpacking functions
-    print(f"pack_rrq('ficheiro.txt'): {pack_rrq('ficheiro.txt')}")          # b'\x01\x00ficheiro.txt\x00octet\x00'
-    s = unpack_rrq(b'\x00\x01ficheiro.txt\x00octet\x00')
-    print(f"unpack_rrq(b''\\x00\\x01ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
-    print()
-    print(f"pack_wrq('ficheiro.txt'): {pack_wrq('ficheiro.txt')}")          # b'\x02\x00ficheiro.txt\x00octet\x00'
-    s = unpack_wrq(b'\x00\x02ficheiro.txt\x00octet\x00')
-    print(f"unpack_wrq(b''\\x00\\x02ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
-    print()
-
-    buffer = bytearray(512)
-    filename = "ficheiro.txt"
-    offset = 0
-    
-    print(f"Packing RRQ into buffer at offset {offset} for filename '{filename}'")
-    print('pack__rq_into(buffer, offset, TFTPOpcode.RRQ, filename)')
-    nbytes = pack__rq_into(buffer, offset, TFTPOpcode.RRQ, filename)
-    print(f"Bytes escritos: {nbytes}")
-    print(f"Buffer (hex): {buffer[:nbytes].hex()}")
-    print()
-
-    print(f"Unpacking from buffer at offset {offset}'")
-    print(f'unpack__rq_into(buffer, offset): {unpack__rq_from(buffer, offset)}')
-
-    err = pack_err(2, "Access violation")
-    print(f"pack_err(2, 'Access violation'): {err}")
-    err_num, err_msg = unpack_err(err)
-    print(f"unpack_err(err): {err_num}, {err_msg}")
+    pass
+    ## Test the packing and unpacking functions
+    #print(f"pack_rrq('ficheiro.txt'): {pack_rrq('ficheiro.txt')}")          # b'\x01\x00ficheiro.txt\x00octet\x00'
+    #s = unpack_rrq(b'\x00\x01ficheiro.txt\x00octet\x00')
+    #print(f"unpack_rrq(b''\\x00\\x01ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
+    #print()
+    #print(f"pack_wrq('ficheiro.txt'): {pack_wrq('ficheiro.txt')}")          # b'\x02\x00ficheiro.txt\x00octet\x00'
+    #s = unpack_wrq(b'\x00\x02ficheiro.txt\x00octet\x00')
+    #print(f"unpack_wrq(b''\\x00\\x02ficheiro.txt\\x00octet\\x00'): {s}")    # ficheiro.txt
+    #print()
+#
+    #buffer = bytearray(512)
+    #filename = "ficheiro.txt"
+    #offset = 0
+    #
+    #print(f"Packing RRQ into buffer at offset {offset} for filename '{filename}'")
+    #print('pack__rq_into(buffer, offset, TFTPOpcode.RRQ, filename)')
+    #nbytes = pack__rq_into(buffer, offset, TFTPOpcode.RRQ, filename)
+    #print(f"Bytes escritos: {nbytes}")
+    #print(f"Buffer (hex): {buffer[:nbytes].hex()}")
+    #print()
+#
+    #print(f"Unpacking from buffer at offset {offset}'")
+    #print(f'unpack__rq_into(buffer, offset): {unpack__rq_from(buffer, offset)}')
+#
+    #err = pack_err(2, "Access violation")
+    #print(f"pack_err(2, 'Access violation'): {err}")
+    #err_num, err_msg = unpack_err(err)
+    #print(f"unpack_err(err): {err_num}, {err_msg}")
+    server_addr = ('127.0.0.1', 69)
+    get_file(server_addr, 'Projecto2.pdf')
