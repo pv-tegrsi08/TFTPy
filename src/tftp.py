@@ -149,7 +149,8 @@ def is_ascii_printable(txt: str) -> bool:
 
 MAX_DATA_LEN = 512      # in bytes
 DEFAULT_MODE = "octet"  # transfer mode (one of 'octet', 'netascii', 'mail')
-INACTIVITY_TIMEOUT = 5
+INACTIVITY_TIMEOUT = 5  # Não encontro no vídeo do professor, escolhi 5 segundos
+                        # (5 seconds) for inactivity timeout
 DEFAULT_BUFFER_SIZE = 8192
 
 # TFTP message opcodes
@@ -238,6 +239,54 @@ def get_file(server_addr: INET4Address, filename: str):
                 else:
                     error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
                     raise ProtocolError(error_msg)
+#:
+
+
+def put_file(server_addr: INET4Address, filename: str):
+    """
+    Put the local file given by `filename` through a TFTP WRQ
+    connection to remote server at `server_addr`.
+    """
+    # PV:
+    # O servidor TFTP em /etc/default/tftpd-hpa tem por default TFTP_OPTIONS="--secure"
+    #  o que significa que aapenas permite puts de ficheiros já existentes, devolvendo error 1!!
+    # Alterar para TFTP_OPTIONS="--secure --create --umask 022"
+    # PS: O tempo que demorei a perceber isto, pensando que o erro estava no código!!
+    with socket(AF_INET, SOCK_DGRAM) as sock:
+        sock.settimeout(INACTIVITY_TIMEOUT)
+        with open(filename, 'rb') as in_file:
+            wrq = pack_wrq(filename)
+            sock.sendto(wrq, server_addr)
+
+            next_block_number = 1
+            while True:
+                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                opcode = unpack_opcode(packet)
+
+                if opcode == TFTPOpcode.ACK:
+                    block_number = unpack_ack(packet)
+
+                    if block_number != next_block_number - 1:
+                        error_msg = f'Invalid block number: {block_number}'
+                        raise ProtocolError(error_msg)
+
+                    data = in_file.read(MAX_DATA_LEN)
+                    if not data:
+                        return
+
+                    dat_packet = pack_dat(next_block_number, data)
+                    sock.sendto(dat_packet, server_address)
+                    next_block_number += 1
+
+                elif opcode == TFTPOpcode.ERROR:
+                    err_code, err_msg = unpack_err(packet)
+                    print(f"ERRO TFTP: código={err_code}, mensagem={err_msg!r}") # PV: Depois retirar esta linha
+                    raise Err(err_code, err_msg)
+
+                else:
+                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.ACK=}'
+                    raise ProtocolError(error_msg)
+#:
 
 # ##############################################################################
 #
@@ -303,7 +352,8 @@ def pack_dat(block_number: int, data: bytes) -> bytes:
     if len(data) > MAX_DATA_LEN:
         raise TFTPValueError(f"Data length exceeds {MAX_DATA_LEN} bytes")
 
-    fmt = f'!H{len(data)}s'
+    # fmt = f'!H{len(data)}s'  Devolve erro. Ver com o original
+    fmt = f'!HH{len(data)}s'
     return struct.pack(fmt, TFTPOpcode.DATA.value, block_number, data)
 #:
 
@@ -415,3 +465,4 @@ if __name__ == "__main__":
     #print(f"unpack_err(err): {err_num}, {err_msg}")
     server_addr = ('127.0.0.1', 69)
     get_file(server_addr, 'Projecto2.pdf')
+    put_file(server_addr, 'Proj2.pdf')
