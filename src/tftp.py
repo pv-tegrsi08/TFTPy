@@ -35,7 +35,6 @@ import ipaddress
 import string
 import re
 
-
 ################################################################################
 ##
 ##      ERRORS AND EXCEPTIONS
@@ -100,6 +99,7 @@ def _make_is_valid_hostname():
 #:
 is_valid_hostname = _make_is_valid_hostname()
 
+
 def get_host_info(server_addr: str) -> tuple[str, str]:
     """
     Returns the server ip and hostname for server_addr. This param may
@@ -110,6 +110,11 @@ def get_host_info(server_addr: str) -> tuple[str, str]:
     an IP address for that host name.
     TODO: refactor code...
     """
+
+    # Allow explicitly localhost and 127.0.0.1
+    if server_addr in ("127.0.0.1", "localhost"):
+        return "127.0.0.1", "localhost"
+
     try:
         ipaddress.ip_address(server_addr)
     except ValueError:
@@ -135,6 +140,7 @@ def get_host_info(server_addr: str) -> tuple[str, str]:
             server_name = ''
     return server_ip, server_name
 #:
+
 
 def is_ascii_printable(txt: str) -> bool:
     return set(txt).issubset(string.printable)
@@ -201,15 +207,18 @@ INET4Address = tuple[str, int]  # TCP/UDP address => IPv4 and port
 #
 # ##############################################################################
 
-def get_file(server_addr: INET4Address, filename: str):
+def get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
     """
     Get the remote file given by `filename` thougth a TFTP RRQ
     connection to remote server at `server_addr`.
     """
+    if local_file is None:
+        local_file = remote_file
+
     with socket(AF_INET, SOCK_DGRAM) as sock:
         sock.settimeout(INACTIVITY_TIMEOUT)
-        with open(filename, 'wb') as out_file:
-            rqq = pack_rrq(filename)
+        with open(local_file, 'wb') as out_file:
+            rqq = pack_rrq(remote_file)
             next_block_number = 1
             sock.sendto(rqq, server_addr)
 
@@ -230,8 +239,8 @@ def get_file(server_addr: INET4Address, filename: str):
                     sock.sendto(ack, server_address)
 
                     if len(data) < MAX_DATA_LEN:
-                        return
-
+                        return block_number * DEFAULT_BUFFER_SIZE + len(data)
+                    
                 elif opcode == TFTPOpcode.ERROR:
                     err_code, err_msg = unpack_err(packet)
                     raise Err(err_code, err_msg)
@@ -241,21 +250,63 @@ def get_file(server_addr: INET4Address, filename: str):
                     raise ProtocolError(error_msg)
 #:
 
+# Original code for get_file
+#def get_file(server_addr: INET4Address, filename: str):
+#    """
+#    Get the remote file given by `filename` thougth a TFTP RRQ
+#    connection to remote server at `server_addr`.
+#    """
+#    with socket(AF_INET, SOCK_DGRAM) as sock:
+#        sock.settimeout(INACTIVITY_TIMEOUT)
+#        with open(filename, 'wb') as out_file:
+#            rqq = pack_rrq(filename)
+#            next_block_number = 1
+#            sock.sendto(rqq, server_addr)
+#
+#            while True:
+#                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+#                opcode = unpack_opcode(packet)
+#
+#                if opcode == TFTPOpcode.DATA:
+#                    block_number, data = unpack_dat(packet)
+#
+#                    if block_number not in (next_block_number, next_block_number - 1):
+#                        error_msg = f'Invalid block number: {block_number}'
+#                        raise ProtocolError(error_msg)
+#                    out_file.write(data)
+#                    next_block_number += 1
+#
+#                    ack = pack_ack(block_number)
+#                    sock.sendto(ack, server_address)
+#
+#                    if len(data) < MAX_DATA_LEN:
+#                        return
+#
+#                elif opcode == TFTPOpcode.ERROR:
+#                    err_code, err_msg = unpack_err(packet)
+#                    raise Err(err_code, err_msg)
+#
+#                else:
+#                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
+#                    raise ProtocolError(error_msg)
+##:
 
-def put_file(server_addr: INET4Address, filename: str):
+
+def put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
     """
     Put the local file given by `filename` through a TFTP WRQ
     connection to remote server at `server_addr`.
     """
-    # PV:
-    # O servidor TFTP em /etc/default/tftpd-hpa tem por default TFTP_OPTIONS="--secure"
-    #  o que significa que aapenas permite puts de ficheiros já existentes, devolvendo error 1!!
-    # Alterar para TFTP_OPTIONS="--secure --create --umask 022"
-    # PS: O tempo que demorei a perceber isto, pensando que o erro estava no código!!
+    if local_file is None:
+        local_file = remote_file
+
+    # The TFTP in /etc/default/tftpd-hpa defaults to TFTP_OPTIONS="--secure"
+    #  meaning that it only allows puts of existing files, returning error 1!!
+    # Change to TFTP_OPTIONS="--secure --create --umask 022"
     with socket(AF_INET, SOCK_DGRAM) as sock:
         sock.settimeout(INACTIVITY_TIMEOUT)
-        with open(filename, 'rb') as in_file:
-            wrq = pack_wrq(filename)
+        with open(local_file, 'rb') as in_file:
+            wrq = pack_wrq(remote_file)
             sock.sendto(wrq, server_addr)
 
             next_block_number = 1
@@ -272,7 +323,7 @@ def put_file(server_addr: INET4Address, filename: str):
 
                     data = in_file.read(MAX_DATA_LEN)
                     if not data:
-                        return
+                        return block_number * DEFAULT_BUFFER_SIZE + len(data)
 
                     dat_packet = pack_dat(next_block_number, data)
                     sock.sendto(dat_packet, server_address)
@@ -280,13 +331,59 @@ def put_file(server_addr: INET4Address, filename: str):
 
                 elif opcode == TFTPOpcode.ERROR:
                     err_code, err_msg = unpack_err(packet)
-                    print(f"ERRO TFTP: código={err_code}, mensagem={err_msg!r}") # PV: Depois retirar esta linha
                     raise Err(err_code, err_msg)
 
                 else:
                     error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.ACK=}'
                     raise ProtocolError(error_msg)
 #:
+
+# Original code for put_file
+#def put_file(server_addr: INET4Address, filename: str):
+#    """
+#    Put the local file given by `filename` through a TFTP WRQ
+#    connection to remote server at `server_addr`.
+#    """
+#    # PV:
+#    # O servidor TFTP em /etc/default/tftpd-hpa tem por default TFTP_OPTIONS="--secure"
+#    #  o que significa que aapenas permite puts de ficheiros já existentes, devolvendo error 1!!
+#    # Alterar para TFTP_OPTIONS="--secure --create --umask 022"
+#    # PS: O tempo que demorei a perceber isto, pensando que o erro estava no código!!
+#    with socket(AF_INET, SOCK_DGRAM) as sock:
+#        sock.settimeout(INACTIVITY_TIMEOUT)
+#        with open(filename, 'rb') as in_file:
+#            wrq = pack_wrq(filename)
+#            sock.sendto(wrq, server_addr)
+#
+#            next_block_number = 1
+#            while True:
+#                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+#                opcode = unpack_opcode(packet)
+#
+#                if opcode == TFTPOpcode.ACK:
+#                    block_number = unpack_ack(packet)
+#
+#                    if block_number != next_block_number - 1:
+#                        error_msg = f'Invalid block number: {block_number}'
+#                        raise ProtocolError(error_msg)
+#
+#                    data = in_file.read(MAX_DATA_LEN)
+#                    if not data:
+#                        return
+#
+#                    dat_packet = pack_dat(next_block_number, data)
+#                    sock.sendto(dat_packet, server_address)
+#                    next_block_number += 1
+#
+#                elif opcode == TFTPOpcode.ERROR:
+#                    err_code, err_msg = unpack_err(packet)
+#                    print(f"ERRO TFTP: código={err_code}, mensagem={err_msg!r}") # PV: Depois retirar esta linha
+#                    raise Err(err_code, err_msg)
+#
+#                else:
+#                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.ACK=}'
+#                    raise ProtocolError(error_msg)
+##:
 
 # ##############################################################################
 #
