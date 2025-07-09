@@ -207,9 +207,10 @@ INET4Address = tuple[str, int]  # TCP/UDP address => IPv4 and port
 #
 # ##############################################################################
 
+# GET_FILE e PUT_FILE, alterados, passando de filename para remote_file, local_file
 def get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
     """
-    Get the remote file given by `filename` thougth a TFTP RRQ
+    Get the remote file given by `remote_file` thougth a TFTP RRQ
     connection to remote server at `server_addr`.
     """
     if local_file is None:
@@ -249,47 +250,6 @@ def get_file(server_addr: INET4Address, remote_file: str, local_file: str = None
                     error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
                     raise ProtocolError(error_msg)
 #:
-
-# Original code for get_file
-#def get_file(server_addr: INET4Address, filename: str):
-#    """
-#    Get the remote file given by `filename` thougth a TFTP RRQ
-#    connection to remote server at `server_addr`.
-#    """
-#    with socket(AF_INET, SOCK_DGRAM) as sock:
-#        sock.settimeout(INACTIVITY_TIMEOUT)
-#        with open(filename, 'wb') as out_file:
-#            rqq = pack_rrq(filename)
-#            next_block_number = 1
-#            sock.sendto(rqq, server_addr)
-#
-#            while True:
-#                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-#                opcode = unpack_opcode(packet)
-#
-#                if opcode == TFTPOpcode.DATA:
-#                    block_number, data = unpack_dat(packet)
-#
-#                    if block_number not in (next_block_number, next_block_number - 1):
-#                        error_msg = f'Invalid block number: {block_number}'
-#                        raise ProtocolError(error_msg)
-#                    out_file.write(data)
-#                    next_block_number += 1
-#
-#                    ack = pack_ack(block_number)
-#                    sock.sendto(ack, server_address)
-#
-#                    if len(data) < MAX_DATA_LEN:
-#                        return
-#
-#                elif opcode == TFTPOpcode.ERROR:
-#                    err_code, err_msg = unpack_err(packet)
-#                    raise Err(err_code, err_msg)
-#
-#                else:
-#                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
-#                    raise ProtocolError(error_msg)
-##:
 
 
 def put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
@@ -338,52 +298,6 @@ def put_file(server_addr: INET4Address, remote_file: str, local_file: str = None
                     raise ProtocolError(error_msg)
 #:
 
-# Original code for put_file
-#def put_file(server_addr: INET4Address, filename: str):
-#    """
-#    Put the local file given by `filename` through a TFTP WRQ
-#    connection to remote server at `server_addr`.
-#    """
-#    # PV:
-#    # O servidor TFTP em /etc/default/tftpd-hpa tem por default TFTP_OPTIONS="--secure"
-#    #  o que significa que aapenas permite puts de ficheiros já existentes, devolvendo error 1!!
-#    # Alterar para TFTP_OPTIONS="--secure --create --umask 022"
-#    # PS: O tempo que demorei a perceber isto, pensando que o erro estava no código!!
-#    with socket(AF_INET, SOCK_DGRAM) as sock:
-#        sock.settimeout(INACTIVITY_TIMEOUT)
-#        with open(filename, 'rb') as in_file:
-#            wrq = pack_wrq(filename)
-#            sock.sendto(wrq, server_addr)
-#
-#            next_block_number = 1
-#            while True:
-#                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-#                opcode = unpack_opcode(packet)
-#
-#                if opcode == TFTPOpcode.ACK:
-#                    block_number = unpack_ack(packet)
-#
-#                    if block_number != next_block_number - 1:
-#                        error_msg = f'Invalid block number: {block_number}'
-#                        raise ProtocolError(error_msg)
-#
-#                    data = in_file.read(MAX_DATA_LEN)
-#                    if not data:
-#                        return
-#
-#                    dat_packet = pack_dat(next_block_number, data)
-#                    sock.sendto(dat_packet, server_address)
-#                    next_block_number += 1
-#
-#                elif opcode == TFTPOpcode.ERROR:
-#                    err_code, err_msg = unpack_err(packet)
-#                    print(f"ERRO TFTP: código={err_code}, mensagem={err_msg!r}") # PV: Depois retirar esta linha
-#                    raise Err(err_code, err_msg)
-#
-#                else:
-#                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.ACK=}'
-#                    raise ProtocolError(error_msg)
-##:
 
 # ##############################################################################
 #
@@ -489,44 +403,6 @@ def unpack_err(packet: bytes) -> tuple[int, str]:
     if opcode != TFTPOpcode.ERROR.value:
         raise TFTPValueError(f"Invalid opcode: {opcode}")
     return error_num, error_msg[:-1]
-#:
-
-
-# ##############################################################################
-# PACKET PACKING AND UNPACKING (ALTERNATIVE)
-# REVER
-# Generic functions to pack / unpack both RRQ and WRQ packets using the more
-#  efficient struct.pack_into() and struct.unpack_from() methods.
-def pack__rq_into(buffer: bytearray, offset: int, opcode: TFTPOpcode, filename: str, mode=DEFAULT_MODE) -> int:
-    # Packs a RRQ or a WRQ into the buffer at a specified offset.
-    filename_bytes = filename.encode() + b'\x00'
-    mode_bytes = mode.encode() + b'\x00'
-    fmt = f'!H{len(filename_bytes)}s{len(mode_bytes)}s'
-    struct.pack_into(fmt, buffer, offset, opcode.value, filename_bytes, mode_bytes)
-    return struct.calcsize(fmt)  # Return the number of bytes packed into buffer
-#:
-
-
-def unpack__rq_from(buffer: bytes, offset=0) -> tuple[str, str]:
-    # Unpacks a RRQ or a WRQ into the buffer at a specified offset.
-    if len(buffer) < offset + 4:
-        raise ValueError("Buffer too small for RRQ/WRQ packet.")
-    
-    opcode = struct.unpack_from('!H', buffer, offset)[0]
-    if opcode not in (TFTPOpcode.RRQ.value, TFTPOpcode.WRQ.value):
-        raise ValueError("Invalid ?RQ packet")
-
-    offset += 2
-    end_filename = buffer.index(0, offset)
-    filename = buffer[offset:end_filename].decode()
-
-    # O seguinte código não é necessário se implementarmos apenas o 
-    #  transfer mode 'octet'. Falar com o Professor João Galamba.
-    # offset = end_filename + 1
-    # end_mode = buffer.index(0, offset)
-    # mode = buffer[offset:end_mode].decode()
-    # return filename, mode
-    return filename
 #:
 
 

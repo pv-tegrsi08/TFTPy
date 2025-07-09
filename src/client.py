@@ -32,21 +32,8 @@ import os
 import sys
 import cmd
 import subprocess
-import textwrap
-from ipaddress import ip_address
-import readline
-# fix tab-completion behaviour on OS X (which uses libedit)
-if sys.platform == 'darwin':  
-    if 'libedit' in readline.__doc__:
-        readline.parse_and_bind("bind ^I rl_complete")
-
-# In case of error "ModuleNotFoundError: in module named 'docopt'"",
-#  run the following commands:
-# source .venv/bin/activate
-# pip install docopt
 from docopt import docopt
-
-from tftp import get_file, put_file, INET4Address
+from tftp import get_file, put_file, INET4Address, Err
 from tftp import is_ascii_printable, is_valid_hostname, get_host_info
 
 class cmd_tftp_shell(cmd.Cmd):
@@ -55,7 +42,16 @@ class cmd_tftp_shell(cmd.Cmd):
     def __init__(self, server_addr: INET4Address):
         super().__init__()
         self.server_addr = server_addr
-        self.intro = f"Exchanging files with server '{server_addr[0]}'\nServer port is {server_addr[1]}\nType help or ? to list commands.\n"
+        self.intro = f"Exchanging files with server '{server_addr[0]}'\nServer port is {server_addr[1]}\nType help or ? to list commands."
+
+    def cmdloop(self, intro=None):
+        while True:
+            try:
+                super().cmdloop(intro=intro)
+                break
+            except KeyboardInterrupt:
+                print("^C pressed")
+                print("Please write quit to exit.\n")
 
     def do_get(self, arg):
         "get remote_file [local_file]: Download a file from the server"
@@ -65,18 +61,24 @@ class cmd_tftp_shell(cmd.Cmd):
             return
         remote_file = args[0]
         local_file = args[1] if len(args) > 1 else remote_file
-        if not is_ascii_printable(remote_file) or not is_ascii_printable(local_file):
+        if not is_ascii_printable(remote_file):
             print(f"Invalid file name: {remote_file}")
             return
         if local_file != remote_file and not is_ascii_printable(local_file):
             print(f"Invalid file name: {local_file}")
             return
+
         try:
             bytes_received = get_file(self.server_addr, remote_file, local_file)
             print(f"Received file '{local_file}' {bytes_received} bytes.")
+        except Err as e:
+            if e.error_code == 1:
+                print("File not found.")
+            else:
+                print(f"TFTP error: {e.error_msg}")
         except Exception as e:
-            print(f"File not found.")
-            return
+                print(f"Error downloading file: {e}")
+        return
 
     def do_put(self, arg):
         "put local_file [remote_file]: Upload a file to the server"
@@ -86,20 +88,27 @@ class cmd_tftp_shell(cmd.Cmd):
             return
         local_file = args[0]
         remote_file = args[1] if len(args) > 1 else local_file
+        if not is_ascii_printable(local_file):
+            print(f"Invalid file name: {local_file}")
+            return
+        if local_file != remote_file and not is_ascii_printable(remote_file):
+            print(f"Invalid file name: {remote_file}")
+            return
         if not os.path.exists(local_file):
             print(f"File not found: {local_file}")
             return
-        if not is_ascii_printable(local_file) or not is_ascii_printable(remote_file):
-            print("Invalid filename.")
-            return
-        if not is_ascii_printable(remote_file):
-            print(f"Invalid file name: {remote_file}")
-            return
+
         try:
             bytes_sent = put_file(self.server_addr, remote_file, local_file)
             print(f"Sent file '{local_file}' {bytes_sent} bytes.")
+        except Err as e:
+            if e.error_code == 1:
+                print("File not found.")
+            else:
+                print(f"TFTP error: {e.error_msg}")
         except Exception as e:
             print(f"Error uploading file: {e}")
+        return
 
     def do_dir(self, arg):
         "dir: List files on the server"
@@ -155,7 +164,7 @@ Options:
 
     # Validates server
     try:
-        server_ip, hostname = get_host_info(args['<server>'])
+        server_ip, _ = get_host_info(args['<server>'])
     except Exception:
         print(f"Unknown server: {args['<server>']}")
         sys.exit(1) 
@@ -175,7 +184,7 @@ Options:
         for arg in ['<local_file>', '<remote_file>']:
             filename = args[arg]
             if filename and not is_ascii_printable(filename):
-                print(f"File not found: {filename}")
+                print(f"Invalid file name: {filename}")
                 sys.exit(1)
         if args['put']:
             filename = args['<local_file>']
@@ -189,20 +198,31 @@ Options:
     server_addr: INET4Address = (server_ip, port)
 
     if args['get']:
-        local_file = local_file[0] if local_file else remote_file
+        local_file = local_file if local_file else remote_file
         try:
             bytes_received = get_file(server_addr, remote_file, local_file)
             print(f"Received file '{local_file}' {bytes_received} bytes.")
+        except Err as e:
+            if e.error_code == 1:
+                print("File not found.")
+            else:
+                print(f"TFTP error: {e.error_msg}")
+            sys.exit(1)
         except Exception as e:
             print(f"Error downloading file: {e}")
             sys.exit(1)
-        
 
     elif args['put']:
-        remote_file = remote_file[0] if remote_file else local_file
+        remote_file = remote_file if remote_file else local_file
         try:
             bytes_sent = put_file(server_addr, remote_file, local_file)
             print(f"Sent file '{local_file}' {bytes_sent} bytes.")
+        except Err as e:
+            if e.error_code == 1:
+                print("File not found.")
+            else:
+                print(f"TFTP error: {e.error_msg}")
+            sys.exit(1)
         except Exception as e:
             print(f"Error uploading file: {e}")
             sys.exit(1)
@@ -210,106 +230,8 @@ Options:
     else:
         shell = cmd_tftp_shell(server_addr)
         shell.cmdloop()
-        # exec_tftp_shell(hostname, port)
 #:
 
-
-def exec_tftp_shell(server: str, server_port: int):
-    exit_code = 0
-    print(f"Exchaging files with server '{server}' (<ip do servidor>)")
-    print(f"Server port is {server_port}\n")
-
-    server_addr = INET4Address(server, server_port)
-
-    try:
-        while True:
-            cmd = input("tftp client> ")
-
-            match cmd.split():
-                case ['get', remote_file, *local_file]:
-                    local_file = local_file[0] if local_file else remote_file
-                    
-                    if not is_ascii_printable(remote_file):
-                        print(f"Invalid file name: {remote_file}")
-                        continue
-
-                    if local_file != remote_file and not is_ascii_printable(local_file):
-                        print(f"Invalid file name: {local_file}")
-                        continue
-                    
-                    try:
-                        bytes_received = get_file(server_addr, remote_file, local_file)
-                        print(f"Received file '{local_file}' {bytes_received} bytes.")
-                    except Exception as e:
-                        print(f"Error downloading file: {e}")
-                        continue
-                    #print(f"GET args => {remote_file=} {local_file=}")
-
-                case ['put', local_file, *remote_file]:
-                    remote_file = remote_file[0] if remote_file else local_file
-
-                    if not is_ascii_printable(local_file) or not os.path.exists(local_file):
-                        print(f"File not found: {local_file}")
-                        continue
-
-                    if not is_ascii_printable(remote_file):
-                        print(f"Invalid file name: {remote_file}")
-                        continue
-
-                    try:
-                        bytes_sent = put_file(server_addr, remote_file, local_file)
-                        print(f"Sent file '{local_file}' {bytes_sent} bytes.")
-                    except Exception as e:
-                        print(f"Error uploading file: {e}")
-                        continue
-                    #print(f"PUT args => {local_file=} {remote_file=}")
-
-                case ['dir']:
-                    temp_file = "_tftp_dir_listing.txt"
-                    try:
-                        bytes_received = get_file(server_addr, '', temp_file)
-                        with open(temp_file, "r") as f:
-                            print(f.read())
-                        os.remove(temp_file)
-                    except Exception as e:
-                        print("'dir' is not supported by this TFTP server.")
-                        if os.path.exists(temp_file):
-                            os.remove(temp_file)
-                        continue
-
-                case ['help']:
-                    print(textwrap.dedent(
-                        """
-                        Commands:
-                            get remote_file [local_file] - get a file from server and save it
-                                                           as local_file
-                            put local_file [remote_file] - send a file to server and store it 
-                                                           as remote_file
-                            dir                          - obtain a listing of remote files
-                            cls | clear                  - clear screen
-                            quit                         - exit TFTP client
-                        """
-                    ))
-                case ['quit']:
-                    break
-
-                case ['cls' | 'clear']:
-                    clear_screen()
-
-                case _:
-                    print(f"Unknown command: '{cmd}'")
-
-    except KeyboardInterrupt:
-        print("\nCTRL+C pressed")
-
-    except EOFError:
-        print("\nNo more input")
-
-    finally:
-        print("Exiting TFTP client.")
-        print("Goodbye!")
-        sys.exit(exit_code)
-#:
 
 def clear_screen():
     """
