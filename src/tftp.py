@@ -165,7 +165,7 @@ def server_send_file(transfer_sock, client_addr, local_file, remote_file):
     """
     Sends the requested 'local_file' to the client, in TFTP blocks of 512 bytes.
     """
-    print(f"[{time.strftime('%H:%M:%S')}] RRQ from {client_addr} for '{remote_file}'")
+    print(f"[{time.strftime('%H:%M:%S')}] RRQ request from {client_addr} for '{remote_file}'")
     with open(local_file, 'rb') as f:
         block_number = 1
         while True:
@@ -210,19 +210,19 @@ def server_receive_file(transfer_sock, client_addr, local_file, remote_file):
     """
     Receives a file from the client, in TFTP blocks of 512 bytes.
     """
-    print(f"[{time.strftime('%H:%M:%S')}] WRQ from {client_addr} for '{remote_file}'")
+    print(f"[{time.strftime('%H:%M:%S')}] WRQ request from {client_addr} for '{remote_file}'")
     success = False
     try:
         with open(local_file, 'wb') as f:
             ack_packet = pack_ack(0)
             transfer_sock.sendto(ack_packet, client_addr)
-            block_number = 1
+            next_block_number = 1
             while True:
                 try:
                     transfer_sock.settimeout(INACTIVITY_TIMEOUT)
                     packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
                 except TimeoutError:
-                    print(f"Timeout waiting for DATA for block {block_number} from {client_addr}. Aborting transfer.")
+                    print(f"Timeout waiting for DATA for block {next_block_number} from {client_addr}. Aborting transfer.")
                     return
                 except Exception as e:
                     print(f"Error during WRQ transfer: {e}")
@@ -231,16 +231,23 @@ def server_receive_file(transfer_sock, client_addr, local_file, remote_file):
                 op = unpack_opcode(packet)
                 if op == TFTPOpcode.DATA:
                     data_block_num, data = unpack_dat(packet)
-                    if data_block_num != block_number:
-                        print(f"Invalid DATA block number: {data_block_num} (expected {block_number})")
+                    
+                    if data_block_num == next_block_number:
+                        f.write(data)
+                        ack_packet = pack_ack(next_block_number)
+                        transfer_sock.sendto(ack_packet, client_addr)
+                        if len(data) < MAX_DATA_LEN:
+                            success = True
+                            break
+                        next_block_number += 1
+                    elif data_block_num == next_block_number - 1:
+                        # Repeated block, lost ACK, just resend the ACK, don't write
+                        ack_packet = pack_ack(data_block_num)
+                        transfer_sock.sendto(ack_packet, client_addr)
+                        # Não incrementa next_block_number, não escreve
+                    else:
+                        print(f"Invalid DATA block number: {data_block_num} (expected {next_block_number})")
                         continue  # Espera bloco correto
-                    f.write(data)
-                    ack_packet = pack_ack(block_number)
-                    transfer_sock.sendto(ack_packet, client_addr)
-                    if len(data) < MAX_DATA_LEN:
-                        success = True
-                        break
-                    block_number += 1
                 elif op == TFTPOpcode.ERROR:
                     err_code, err_msg = unpack_err(packet)
                     print(f"TFTP error from client: {err_code} {err_msg}")
@@ -292,12 +299,17 @@ def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str
                     if opcode == TFTPOpcode.DATA:
                         block_number, data = unpack_dat(packet)
 
-                        if block_number not in (next_block_number, next_block_number - 1):
+                        if block_number == next_block_number:
+                            out_file.write(data)
+                            next_block_number += 1
+                        elif block_number == next_block_number - 1:
+                           # Repeated block, lost ACK, just resend the ACK, don't write
+                            pass
+                        else:
                             error_msg = f'Invalid block number: {block_number}'
                             raise ProtocolError(error_msg)
-                        out_file.write(data)
-                        next_block_number += 1
 
+                        # Send ACK for the received block
                         ack = pack_ack(block_number)
                         sock.sendto(ack, server_address)
 

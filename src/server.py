@@ -153,9 +153,15 @@ Options:
     hostname = gethostname()
     print(f"Waiting for requests on '{hostname}' port '{port}'")
 
-    while True:
-        data, client_addr = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-        threading.Thread(target=do_request, args=(data, client_addr, directory), daemon=True).start()
+    try:
+        while True:
+            data, client_addr = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+            threading.Thread(target=do_request, args=(data, client_addr, directory), daemon=True).start()
+    except KeyboardInterrupt:
+        print("\nExiting TFTP server..")
+        print("Goodbye!\n")
+        sock.close()
+        sys.exit(0)
 #:
 
 
