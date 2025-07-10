@@ -153,10 +153,10 @@ def is_ascii_printable(txt: str) -> bool:
 #
 # ##############################################################################
 
-MAX_DATA_LEN = 512      # in bytes
-DEFAULT_MODE = "octet"  # transfer mode (one of 'octet', 'netascii', 'mail')
-INACTIVITY_TIMEOUT = 5  # Não encontro no vídeo do professor, escolhi 5 segundos
-                        # (5 seconds) for inactivity timeout
+MAX_DATA_LEN = 512       # in bytes
+DEFAULT_MODE = "octet"   # transfer mode (one of 'octet', 'netascii', 'mail')
+INACTIVITY_TIMEOUT = 60  # Não encontro no vídeo do professor, escolhi 60 segundos
+                         # como no servidor
 DEFAULT_BUFFER_SIZE = 8192
 
 # TFTP message opcodes

@@ -172,7 +172,7 @@ Options:
     # Validates port
     port_str = args['--port'] or "69"
     port = 0
-    if port_str.isnumeric():
+    if port_str.isdigit():
         port = int(port_str)
     if not (0 < port < 65536):
         print(f"Invalid port number: {port_str}")
