@@ -28,124 +28,15 @@ Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
 """
 
+import os
 from enum import Enum
+import time
 import struct
+import socket
 from socket import socket, AF_INET, SOCK_DGRAM
 import ipaddress
 import string
 import re
-
-################################################################################
-##
-##      ERRORS AND EXCEPTIONS
-##
-################################################################################
-
-class TFTPValueError(ValueError):
-    pass
-#:
-
-class NetworkError(Exception):
-    """
-    Any network error, like "host not found", timeouts, etc.
-    """
-#:
-
-class ProtocolError(NetworkError):
-    """
-    A protocol error like unexpected or invalid opcode, wrong block 
-    number, or any other invalid protocol parameter.
-    """
-#:
-
-class Err(Exception):
-    """
-    An error sent by the server. It may be caused because a read/write 
-    can't be processed. Read and write errors during file transmission 
-    also cause this message to be sent, and transmission is then 
-    terminated. The error number gives a numeric error code, followed 
-    by an ASCII error message that might contain additional, operating 
-    system specific information.
-    """
-    def __init__(self, error_code: int, error_msg: str):
-        super().__init__(f'TFTP Error {error_code}')
-        self.error_code = error_code
-        self.error_msg = error_msg
-    #:
-#:
-
-################################################################################
-##
-##      COMMON UTILITIES
-##      Mostly related to network tasks
-##
-################################################################################
-
-def _make_is_valid_hostname():
-    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
-    def _is_valid_hostname(hostname):
-        """
-        From: http://stackoverflow.com/questions/2532053/validate-a-hostname-string
-        See also: https://en.wikipedia.org/wiki/Hostname (and the RFC 
-        referenced there)
-        """
-        if not 0 < len(hostname) <= 255:
-            return False
-        if hostname[-1] == ".":
-            # strip exactly one dot from the right, if present
-            hostname = hostname[:-1]
-        return all(allowed.match(x) for x in hostname.split("."))
-    return _is_valid_hostname
-#:
-is_valid_hostname = _make_is_valid_hostname()
-
-
-def get_host_info(server_addr: str) -> tuple[str, str]:
-    """
-    Returns the server ip and hostname for server_addr. This param may
-    either be an IP address, in which case this function tries to query
-    its hostname, or vice-versa.
-    This functions raises a ValueError exception if the host name in
-    server_addr is ill-formed, and raises NetworkError if we can't get
-    an IP address for that host name.
-    TODO: refactor code...
-    """
-
-    # Allow explicitly localhost and 127.0.0.1
-    if server_addr in ("127.0.0.1", "localhost"):
-        return "127.0.0.1", "localhost"
-
-    try:
-        ipaddress.ip_address(server_addr)
-    except ValueError:
-        # server_addr not a valid ip address, then it might be a 
-        # valid hostname
-        if not is_valid_hostname(server_addr):
-            raise ValueError(f"Invalid hostname: {server_addr}.")
-        server_name = server_addr
-        try:
-            # gethostbyname_ex returns the following tuple: 
-            # (hostname, aliaslist, ipaddrlist)
-            server_ip = socket.gethostbyname_ex(server_name)[2][0]
-        except socket.gaierror:
-            raise NetworkError(f"Unknown server: {server_name}.")
-    else:  
-        # server_addr is a valid ip address, get the hostname
-        # if possible
-        server_ip = server_addr
-        try:
-            # returns a tuple like gethostbyname_ex
-            server_name = socket.gethostbyaddr(server_ip)[0]
-        except socket.herror:
-            server_name = ''
-    return server_ip, server_name
-#:
-
-
-def is_ascii_printable(txt: str) -> bool:
-    return set(txt).issubset(string.printable)
-    # ALTERNATIVA: return not set(txt) - set(string.printable)
-#:
 
 # ##############################################################################
 #
@@ -201,58 +92,237 @@ class TFTPError(Enum):
 
 INET4Address = tuple[str, int]  # TCP/UDP address => IPv4 and port
 
+
 # ##############################################################################
 #
-# SEND AND RECEIVE FILES
+# SERVER SEND AND RECEIVE FILES, SEND DIR
+#
+# ##############################################################################
+
+def server_send_dir(transfer_sock, client_addr, server_dir):
+    """
+    Sends the local directory listing to the client, responding to a dir request
+    """
+
+    if os.name == 'nt':
+        # Windows
+        cmd = f'dir "{server_dir}"'
+    else:
+        # Linux/macOS
+        cmd = f'ls -lh "{server_dir}"'
+    listing = os.popen(cmd).read().encode('utf-8')
+
+    total_len = len(listing)
+    block_number = 1
+    offset = 0
+
+    print(f"[{time.strftime('%H:%M:%S')}] DIR request from {client_addr} for '{server_dir}'")
+
+    while True:
+        data = listing[offset:offset + MAX_DATA_LEN]
+        dat_packet = pack_dat(block_number, data)
+
+        while True:
+            transfer_sock.sendto(dat_packet, client_addr)
+            try:
+                transfer_sock.settimeout(INACTIVITY_TIMEOUT)
+                packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
+            except TimeoutError:
+                print(f"Timeout waiting for ACK for block {block_number} from {client_addr}. Aborting transfer.")
+                return
+            except Exception as e:
+                print(f"Error during DIR transfer: {e}")
+                return
+
+            opcode = unpack_opcode(packet)
+            if opcode == TFTPOpcode.ACK:
+                ack_block = unpack_ack(packet)
+                if ack_block == block_number:
+                    break
+                else:
+                    print(f"Invalid ACK block number: {ack_block} (expected {block_number})")
+                    continue
+            elif opcode == TFTPOpcode.ERROR:
+                err_code, err_msg = unpack_err(packet)
+                print(f"TFTP error from client: {err_code} {err_msg}")
+                return
+            else:
+                print(f"Invalid packet opcode: {opcode}. Expecting ACK.")
+                continue
+
+        offset += MAX_DATA_LEN
+        block_number += 1
+
+        if len(data) < MAX_DATA_LEN:
+            break
+
+    print(f"[{time.strftime('%H:%M:%S')}] DIR listing sent to {client_addr} ({total_len} bytes)")
+    return total_len
+#:
+
+
+def server_send_file(transfer_sock, client_addr, local_file, remote_file):
+    """
+    Sends the requested 'local_file' to the client, in TFTP blocks of 512 bytes.
+    """
+    print(f"[{time.strftime('%H:%M:%S')}] RRQ from {client_addr} for '{remote_file}'")
+    with open(local_file, 'rb') as f:
+        block_number = 1
+        while True:
+            data_block = f.read(MAX_DATA_LEN)
+            dat_packet = pack_dat(block_number, data_block)
+            while True:
+                transfer_sock.sendto(dat_packet, client_addr)
+                try:
+                    transfer_sock.settimeout(INACTIVITY_TIMEOUT)
+                    packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                except TimeoutError:
+                    print(f"Timeout waiting for ACK for block {block_number} from {client_addr}. Aborting transfer.")
+                    return
+                except Exception as e:
+                    print(f"Error during RRQ transfer: {e}")
+                    return
+
+                op = unpack_opcode(packet)
+                if op == TFTPOpcode.ACK:
+                    ack_block = unpack_ack(packet)
+                    if ack_block == block_number:
+                        break
+                    else:
+                        print(f"Invalid ACK block number: {ack_block} (expected {block_number})")
+                        continue
+                elif op == TFTPOpcode.ERROR:
+                    err_code, err_msg = unpack_err(packet)
+                    print(f"TFTP error from client: {err_code} {err_msg}")
+                    return
+                else:
+                    print(f"Invalid packet opcode: {op}. Expecting ACK.")
+                    continue
+
+            if len(data_block) < MAX_DATA_LEN:
+                break
+            block_number += 1
+    print(f"[{time.strftime('%H:%M:%S')}] Sent file '{remote_file}' to {client_addr}")
+#:
+
+
+def server_receive_file(transfer_sock, client_addr, local_file, remote_file):
+    """
+    Receives a file from the client, in TFTP blocks of 512 bytes.
+    """
+    print(f"[{time.strftime('%H:%M:%S')}] WRQ from {client_addr} for '{remote_file}'")
+    success = False
+    try:
+        with open(local_file, 'wb') as f:
+            ack_packet = pack_ack(0)
+            transfer_sock.sendto(ack_packet, client_addr)
+            block_number = 1
+            while True:
+                try:
+                    transfer_sock.settimeout(INACTIVITY_TIMEOUT)
+                    packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                except TimeoutError:
+                    print(f"Timeout waiting for DATA for block {block_number} from {client_addr}. Aborting transfer.")
+                    return
+                except Exception as e:
+                    print(f"Error during WRQ transfer: {e}")
+                    return
+
+                op = unpack_opcode(packet)
+                if op == TFTPOpcode.DATA:
+                    data_block_num, data = unpack_dat(packet)
+                    if data_block_num != block_number:
+                        print(f"Invalid DATA block number: {data_block_num} (expected {block_number})")
+                        continue  # Espera bloco correto
+                    f.write(data)
+                    ack_packet = pack_ack(block_number)
+                    transfer_sock.sendto(ack_packet, client_addr)
+                    if len(data) < MAX_DATA_LEN:
+                        success = True
+                        break
+                    block_number += 1
+                elif op == TFTPOpcode.ERROR:
+                    err_code, err_msg = unpack_err(packet)
+                    print(f"TFTP error from client: {err_code} {err_msg}")
+                    return
+                else:
+                    print(f"Invalid packet opcode: {op}. Expecting DATA.")
+                    continue
+    finally:
+        if not success and os.path.exists(local_file):
+            try:
+                os.remove(local_file)
+                print(f"Aborted transfer: incomplete file '{remote_file}' removed.")
+            except Exception as e:
+                print(f"Could not remove incomplete file '{remote_file}': {e}")
+    if success:
+        print(f"[{time.strftime('%H:%M:%S')}] Received file '{remote_file}' from {client_addr}")
+#:
+
+
+# ##############################################################################
+#
+# CLIENT SEND AND RECEIVE FILES
 #
 # ##############################################################################
 
 # GET_FILE e PUT_FILE, alterados, passando de filename para remote_file, local_file
-def get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
+def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
     """
     Get the remote file given by `remote_file` thougth a TFTP RRQ
     connection to remote server at `server_addr`.
     """
+    success = False
+
     if local_file is None:
         local_file = remote_file
 
     with socket(AF_INET, SOCK_DGRAM) as sock:
         sock.settimeout(INACTIVITY_TIMEOUT)
-        with open(local_file, 'wb') as out_file:
-            rqq = pack_rrq(remote_file)
-            next_block_number = 1
-            sock.sendto(rqq, server_addr)
+        try:
+            with open(local_file, 'wb') as out_file:
+                rqq = pack_rrq(remote_file)
+                next_block_number = 1
+                sock.sendto(rqq, server_addr)
 
-            while True:
-                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-                opcode = unpack_opcode(packet)
+                while True:
+                    packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                    opcode = unpack_opcode(packet)
 
-                if opcode == TFTPOpcode.DATA:
-                    block_number, data = unpack_dat(packet)
+                    if opcode == TFTPOpcode.DATA:
+                        block_number, data = unpack_dat(packet)
 
-                    if block_number not in (next_block_number, next_block_number - 1):
-                        error_msg = f'Invalid block number: {block_number}'
+                        if block_number not in (next_block_number, next_block_number - 1):
+                            error_msg = f'Invalid block number: {block_number}'
+                            raise ProtocolError(error_msg)
+                        out_file.write(data)
+                        next_block_number += 1
+
+                        ack = pack_ack(block_number)
+                        sock.sendto(ack, server_address)
+
+                        if len(data) < MAX_DATA_LEN:
+                            success = True
+                            return block_number * DEFAULT_BUFFER_SIZE + len(data)
+                        
+                    elif opcode == TFTPOpcode.ERROR:
+                        err_code, err_msg = unpack_err(packet)
+                        raise Err(err_code, err_msg)
+
+                    else:
+                        error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
                         raise ProtocolError(error_msg)
-                    out_file.write(data)
-                    next_block_number += 1
-
-                    ack = pack_ack(block_number)
-                    sock.sendto(ack, server_address)
-
-                    if len(data) < MAX_DATA_LEN:
-                        return block_number * DEFAULT_BUFFER_SIZE + len(data)
-                    
-                elif opcode == TFTPOpcode.ERROR:
-                    err_code, err_msg = unpack_err(packet)
-                    raise Err(err_code, err_msg)
-
-                else:
-                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
-                    raise ProtocolError(error_msg)
+        finally:
+            if not success and os.path.exists(local_file):
+                try:
+                    os.remove(local_file)
+                    print(f"Aborted transfer: incomplete file '{local_file}' removed.")
+                except Exception as e:
+                    print(f"Could not remove incomplete file '{local_file}': {e}")
 #:
 
 
-def put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
+def client_put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
     """
     Put the local file given by `filename` through a TFTP WRQ
     connection to remote server at `server_addr`.
@@ -406,6 +476,121 @@ def unpack_err(packet: bytes) -> tuple[int, str]:
 #:
 
 
+################################################################################
+##
+##      ERRORS AND EXCEPTIONS
+##
+################################################################################
+
+class TFTPValueError(ValueError):
+    pass
+#:
+
+class NetworkError(Exception):
+    """
+    Any network error, like "host not found", timeouts, etc.
+    """
+#:
+
+class ProtocolError(NetworkError):
+    """
+    A protocol error like unexpected or invalid opcode, wrong block 
+    number, or any other invalid protocol parameter.
+    """
+#:
+
+class Err(Exception):
+    """
+    An error sent by the server. It may be caused because a read/write 
+    can't be processed. Read and write errors during file transmission 
+    also cause this message to be sent, and transmission is then 
+    terminated. The error number gives a numeric error code, followed 
+    by an ASCII error message that might contain additional, operating 
+    system specific information.
+    """
+    def __init__(self, error_code: int, error_msg: str):
+        super().__init__(f'TFTP Error {error_code}')
+        self.error_code = error_code
+        self.error_msg = error_msg
+    #:
+#:
+
+
+################################################################################
+##
+##      FILE utils.py
+##      COMMON UTILITIES
+##      Mostly related to network tasks
+##
+################################################################################
+
+def _make_is_valid_hostname():
+    allowed = re.compile(r"(?!-)[A-Z\d-]{1,63}(?<!-)$", re.IGNORECASE)
+    def _is_valid_hostname(hostname):
+        """
+        From: http://stackoverflow.com/questions/2532053/validate-a-hostname-string
+        See also: https://en.wikipedia.org/wiki/Hostname (and the RFC 
+        referenced there)
+        """
+        if not 0 < len(hostname) <= 255:
+            return False
+        if hostname[-1] == ".":
+            # strip exactly one dot from the right, if present
+            hostname = hostname[:-1]
+        return all(allowed.match(x) for x in hostname.split("."))
+    return _is_valid_hostname
+#:
+is_valid_hostname = _make_is_valid_hostname()
+
+
+def get_host_info(server_addr: str) -> tuple[str, str]:
+    """
+    Returns the server ip and hostname for server_addr. This param may
+    either be an IP address, in which case this function tries to query
+    its hostname, or vice-versa.
+    This functions raises a ValueError exception if the host name in
+    server_addr is ill-formed, and raises NetworkError if we can't get
+    an IP address for that host name.
+    TODO: refactor code...
+    """
+
+    # Allow explicitly localhost and 127.0.0.1
+    if server_addr in ("127.0.0.1", "localhost"):
+        return "127.0.0.1", "localhost"
+
+    try:
+        ipaddress.ip_address(server_addr)
+    except ValueError:
+        # server_addr not a valid ip address, then it might be a 
+        # valid hostname
+        if not is_valid_hostname(server_addr):
+            raise ValueError(f"Invalid hostname: {server_addr}.")
+        server_name = server_addr
+        try:
+            # gethostbyname_ex returns the following tuple: 
+            # (hostname, aliaslist, ipaddrlist)
+            server_ip = socket.gethostbyname_ex(server_name)[2][0]
+        except socket.gaierror:
+            raise NetworkError(f"Unknown server: {server_name}.")
+    else:  
+        # server_addr is a valid ip address, get the hostname
+        # if possible
+        server_ip = server_addr
+        try:
+            # returns a tuple like gethostbyname_ex
+            server_name = socket.gethostbyaddr(server_ip)[0]
+        except socket.herror:
+            server_name = ''
+    return server_ip, server_name
+#:
+
+
+def is_ascii_printable(txt: str) -> bool:
+    return set(txt).issubset(string.printable)
+    # ALTERNATIVA: return not set(txt) - set(string.printable)
+#:
+
+
 if __name__ == "__main__":
     pass
     ## Test the packing and unpacking functions
@@ -437,5 +622,5 @@ if __name__ == "__main__":
     #err_num, err_msg = unpack_err(err)
     #print(f"unpack_err(err): {err_num}, {err_msg}")
     server_addr = ('127.0.0.1', 69)
-    get_file(server_addr, 'Projecto2.pdf')
-    put_file(server_addr, 'Proj2.pdf')
+    client_get_file(server_addr, 'Projecto2.pdf')
+    client_put_file(server_addr, 'Proj2.pdf')

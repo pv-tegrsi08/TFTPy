@@ -32,169 +32,22 @@ import os
 import sys
 import time
 from docopt import docopt
-from socket import socket, AF_INET, SOCK_DGRAM, SOL_SOCKET, SO_REUSEADDR
+from socket import socket, AF_INET, SOCK_DGRAM, SOL_SOCKET, SO_REUSEADDR, gethostname
 # import socketserver   Parece mais difícil de lidar com portos efémeros
 import threading
+
+#from tftp import (
+#    unpack_opcode, unpack_rrq, unpack_wrq, pack_dat, pack_ack, pack_err,
+#    unpack_ack, unpack_err, pack_rrq, pack_wrq, 
+#    TFTPOpcode, is_ascii_printable, TFTPError, MAX_DATA_LEN, INACTIVITY_TIMEOUT,
+#    DEFAULT_BUFFER_SIZE
+#)
+
 from tftp import (
-    unpack_opcode, unpack_rrq, unpack_wrq, pack_dat, pack_ack, pack_err,
-    unpack_ack, unpack_err, pack_rrq, pack_wrq, 
-    TFTPOpcode, is_ascii_printable, TFTPError, MAX_DATA_LEN, INACTIVITY_TIMEOUT,
-    DEFAULT_BUFFER_SIZE
+    unpack_opcode, unpack_rrq, unpack_wrq, pack_err, TFTPOpcode, is_ascii_printable,
+    TFTPError, server_send_dir, server_send_file, server_receive_file,
+    INACTIVITY_TIMEOUT, DEFAULT_BUFFER_SIZE
 )
-
-
-def send_dir(transfer_sock, client_addr, server_dir):
-    """
-    Sends the local directory listing to the client, responding to a dir request
-    """
-
-    if os.name == 'nt':
-        # Windows
-        cmd = f'dir "{server_dir}"'
-    else:
-        # Linux/macOS
-        cmd = f'ls -lh "{server_dir}"'
-    listing = os.popen(cmd).read().encode('utf-8')
-
-    total_len = len(listing)
-    block_number = 1
-    offset = 0
-
-    print(f"[{time.strftime('%H:%M:%S')}] DIR request from {client_addr} for '{server_dir}'")
-
-    while True:
-        data = listing[offset:offset + MAX_DATA_LEN]
-        dat_packet = pack_dat(block_number, data)
-
-        while True:
-            transfer_sock.sendto(dat_packet, client_addr)
-            try:
-                transfer_sock.settimeout(INACTIVITY_TIMEOUT)
-                packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
-            except TimeoutError:
-                print(f"Timeout waiting for ACK for block {block_number} from {client_addr}. Aborting transfer.")
-                return
-            except Exception as e:
-                print(f"Error during DIR transfer: {e}")
-                return
-
-            opcode = unpack_opcode(packet)
-            if opcode == TFTPOpcode.ACK:
-                ack_block = unpack_ack(packet)
-                if ack_block == block_number:
-                    break
-                else:
-                    print(f"Invalid ACK block number: {ack_block} (expected {block_number})")
-                    continue
-            elif opcode == TFTPOpcode.ERROR:
-                err_code, err_msg = unpack_err(packet)
-                print(f"TFTP error from client: {err_code} {err_msg}")
-                return
-            else:
-                print(f"Invalid packet opcode: {opcode}. Expecting ACK.")
-                continue
-
-        offset += MAX_DATA_LEN
-        block_number += 1
-
-        if len(data) < MAX_DATA_LEN:
-            break
-
-    print(f"[{time.strftime('%H:%M:%S')}] DIR listing sent to {client_addr} ({total_len} bytes)")
-    return total_len
-#:
-
-#def get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
-#    """
-#    Get the remote file given by `remote_file` thougth a TFTP RRQ
-#    connection to remote server at `server_addr`.
-#    """
-#    if local_file is None:
-#        local_file = remote_file
-#
-#    with socket(AF_INET, SOCK_DGRAM) as sock:
-#        sock.settimeout(INACTIVITY_TIMEOUT)
-#        with open(local_file, 'wb') as out_file:
-#            rqq = pack_rrq(remote_file)
-#            next_block_number = 1
-#            sock.sendto(rqq, server_addr)
-#
-#            while True:
-#                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-#                opcode = unpack_opcode(packet)
-#
-#                if opcode == TFTPOpcode.DATA:
-#                    block_number, data = unpack_dat(packet)
-#
-#                    if block_number not in (next_block_number, next_block_number - 1):
-#                        error_msg = f'Invalid block number: {block_number}'
-#                        raise ProtocolError(error_msg)
-#                    out_file.write(data)
-#                    next_block_number += 1
-#
-#                    ack = pack_ack(block_number)
-#                    sock.sendto(ack, server_address)
-#
-#                    if len(data) < MAX_DATA_LEN:
-#                        return block_number * DEFAULT_BUFFER_SIZE + len(data)
-#                    
-#                elif opcode == TFTPOpcode.ERROR:
-#                    err_code, err_msg = unpack_err(packet)
-#                    raise Err(err_code, err_msg)
-#
-#                else:
-#                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.DATA=}'
-#                    raise ProtocolError(error_msg)
-##:
-
-
-
-#def put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
-#    """
-#    Put the local file given by `filename` through a TFTP WRQ
-#    connection to remote server at `server_addr`.
-#    """
-#    if local_file is None:
-#        local_file = remote_file
-#
-#    # The TFTP in /etc/default/tftpd-hpa defaults to TFTP_OPTIONS="--secure"
-#    #  meaning that it only allows puts of existing files, returning error 1!!
-#    # Change to TFTP_OPTIONS="--secure --create --umask 022"
-#    with socket(AF_INET, SOCK_DGRAM) as sock:
-#        sock.settimeout(INACTIVITY_TIMEOUT)
-#        with open(local_file, 'rb') as in_file:
-#            wrq = pack_wrq(remote_file)
-#            sock.sendto(wrq, server_addr)
-#
-#            next_block_number = 1
-#            while True:
-#                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-#                opcode = unpack_opcode(packet)
-#
-#                if opcode == TFTPOpcode.ACK:
-#                    block_number = unpack_ack(packet)
-#
-#                    if block_number != next_block_number - 1:
-#                        error_msg = f'Invalid block number: {block_number}'
-#                        raise ProtocolError(error_msg)
-#
-#                    data = in_file.read(MAX_DATA_LEN)
-#                    if not data:
-#                        return block_number * DEFAULT_BUFFER_SIZE + len(data)
-#
-#                    dat_packet = pack_dat(next_block_number, data)
-#                    sock.sendto(dat_packet, server_address)
-#                    next_block_number += 1
-#
-#                elif opcode == TFTPOpcode.ERROR:
-#                    err_code, err_msg = unpack_err(packet)
-#                    raise Err(err_code, err_msg)
-#
-#                else:
-#                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.ACK=}'
-#                    raise ProtocolError(error_msg)
-##:
-
 
 def do_request(data, client_addr, server_dir):
     with socket(AF_INET, SOCK_DGRAM) as transfer_sock:
@@ -209,12 +62,26 @@ def do_request(data, client_addr, server_dir):
                 transfer_sock.sendto(err, client_addr)
                 return
 
-            # DIR
+            # RRQ DIR
             if filename == '':
-                send_dir(transfer_sock, client_addr, server_dir)
+                server_send_dir(transfer_sock, client_addr, server_dir)
                 return
 
-            #send_file(transfer_sock, client_addr, )
+            # RRQ FILE
+            # Checks safe path. If client tries to access files outside the server directory
+            #  using something like ../private/file.txt, will generate an Access violation.
+            local_file = os.path.abspath(os.path.join(server_dir, filename))
+            if not local_file.startswith(os.path.abspath(server_dir)):
+                err = pack_err(TFTPError.ACCESS_VIOLATION.value[0], "Access violation.")
+                transfer_sock.sendto(err, client_addr)
+                return
+
+            if not os.path.isfile(local_file):
+                err = pack_err(TFTPError.FILE_NOT_FOUND.value[0], "File not found.")
+                transfer_sock.sendto(err, client_addr)
+                return
+
+            server_send_file(transfer_sock, client_addr, local_file, filename)
 
         elif opcode == TFTPOpcode.WRQ:
             filename, mode = unpack_wrq(data)
@@ -223,14 +90,28 @@ def do_request(data, client_addr, server_dir):
                 transfer_sock.sendto(err, client_addr)
                 return
 
-            #receive_file(transfer_sock, client_addr, )
+            # Checks safe path. If client tries to write files outside the server directory
+            #  using something like ../private/file.txt, will generate an Access violation.
+            local_file = os.path.abspath(os.path.join(server_dir, filename))
+            if not local_file.startswith(os.path.abspath(server_dir)):
+                err = pack_err(TFTPError.ACCESS_VIOLATION.value[0], "Access violation.")
+                transfer_sock.sendto(err, client_addr)
+                return
+
+            # If the local_file already exists, return an error. See project statement, page 12
+            if os.path.exists(local_file):
+                err = pack_err(TFTPError.FILE_EXISTS.value[0], "File already exists.")
+                transfer_sock.sendto(err, client_addr)
+                return
+
+            server_receive_file(transfer_sock, client_addr, local_file, filename)
 
         else:
             err = pack_err(TFTPError.ILLEGAL_OPERATION.value[0], "Illegal TFTP operation.")
             transfer_sock.sendto(err, client_addr)
             print(f"[{time.strftime('%H:%M:%S')}] Invalid opcode from {client_addr}")
             return
-
+#:
 
 def main():
     doc = """TFTP Server.
@@ -246,7 +127,7 @@ Options:
 """
     args = docopt(doc)
 
-    # Validates args
+    # Validates docopt args
     directory = args['<directory>'] or os.getcwd()
     if not os.path.isdir(directory):
         print(f"Directory '{directory}' does not exist.")
@@ -261,7 +142,7 @@ Options:
         sys.exit(1)
 
     try:
-        # Project, page 9
+        # Project statement, page 9
         sock = socket(AF_INET, SOCK_DGRAM)
         sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, True)
         sock.bind(('', port))
@@ -269,7 +150,7 @@ Options:
         print(f"Unable to bind to port '{port}'.")
         sys.exit(1)
 
-    hostname = socket.gethostname()
+    hostname = gethostname()
     print(f"Waiting for requests on '{hostname}' port '{port}'")
 
     while True:

@@ -33,10 +33,10 @@ import sys
 import cmd
 import subprocess
 from docopt import docopt
-from tftp import get_file, put_file, INET4Address, Err
-from tftp import is_ascii_printable, is_valid_hostname, get_host_info
+from tftp import client_get_file, client_put_file, INET4Address, Err
+from tftp import is_ascii_printable, get_host_info
 
-class cmd_tftp_shell(cmd.Cmd):
+class TFTPCmdShell(cmd.Cmd):
     prompt = "tftp client> "
 
     def __init__(self, server_addr: INET4Address):
@@ -69,7 +69,7 @@ class cmd_tftp_shell(cmd.Cmd):
             return
 
         try:
-            bytes_received = get_file(self.server_addr, remote_file, local_file)
+            bytes_received = client_get_file(self.server_addr, remote_file, local_file)
             print(f"Received file '{local_file}' {bytes_received} bytes.")
         except Err as e:
             if e.error_code == 1:
@@ -99,7 +99,7 @@ class cmd_tftp_shell(cmd.Cmd):
             return
 
         try:
-            bytes_sent = put_file(self.server_addr, remote_file, local_file)
+            bytes_sent = client_put_file(self.server_addr, remote_file, local_file)
             print(f"Sent file '{local_file}' {bytes_sent} bytes.")
         except Err as e:
             if e.error_code == 1:
@@ -114,7 +114,7 @@ class cmd_tftp_shell(cmd.Cmd):
         "dir: List files on the server"
         temp_file = "_tftp_dir_listing.txt"
         try:
-            bytes_received = get_file(self.server_addr, '', temp_file)
+            bytes_received = client_get_file(self.server_addr, '', temp_file)
             with open(temp_file, "r") as f:
                 print(f.read())
             os.remove(temp_file)
@@ -200,7 +200,7 @@ Options:
     if args['get']:
         local_file = local_file if local_file else remote_file
         try:
-            bytes_received = get_file(server_addr, remote_file, local_file)
+            bytes_received = client_get_file(server_addr, remote_file, local_file)
             print(f"Received file '{local_file}' {bytes_received} bytes.")
         except Err as e:
             if e.error_code == 1:
@@ -215,7 +215,7 @@ Options:
     elif args['put']:
         remote_file = remote_file if remote_file else local_file
         try:
-            bytes_sent = put_file(server_addr, remote_file, local_file)
+            bytes_sent = client_put_file(server_addr, remote_file, local_file)
             print(f"Sent file '{local_file}' {bytes_sent} bytes.")
         except Err as e:
             if e.error_code == 1:
@@ -228,7 +228,7 @@ Options:
             sys.exit(1)
 
     else:
-        shell = cmd_tftp_shell(server_addr)
+        shell = TFTPCmdShell(server_addr)
         shell.cmdloop()
 #:
 
