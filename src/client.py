@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-TFTPy a simple implementation of the TFTP protocol that can be used to transfer files between a client and a server.
+TFTPy is a simple implementation of the TFTP protocol that can be used to
+ transfer files between a client and a server.
 It supports both the get and put commands to download and upload files respectively.
 
 This client accepts these commands to interact with a server.
@@ -9,16 +10,17 @@ This client accepts these commands to interact with a server.
     $ python3 client.py put [-p serv_port] server local_file [remote_file]
 
 
-# Successfully tested on the following platforms:
-#    - Windows 10 22H2 with Python 3.12.1
-#    - Linux Mint 21.2 with Python 3.12.1
+Successfully tested on the following platforms:
+    Windows 10 22H2 with Python 3.12.1
+    Linux Mint 21.2 with Python 3.12.1
 
-# Libraries used (all from Python's standard library, no external libraries installed via pip were used):
-#    - sys
-#    - time
-#    - argparse
-#    - os
-#    - subprocess
+Libraries used (all from Python's standard library):
+    os
+    sys
+    cmd
+
+External libraries used requiring pip install:
+    docopt
 
 A virtual environment (.venv) was used to isolate the project.
 
@@ -31,10 +33,9 @@ Source code licensed under GPLv3. Please refer to:
 import os
 import sys
 import cmd
-import subprocess
 from docopt import docopt
 from tftp import client_get_file, client_put_file, INET4Address, Err
-from tftp import is_ascii_printable, get_host_info
+from tftp import is_ascii_printable, get_host_info, clearScreen
 
 class TFTPCmdShell(cmd.Cmd):
     prompt = "tftp client> "
@@ -123,14 +124,9 @@ class TFTPCmdShell(cmd.Cmd):
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
-    def do_cls(self, arg):
-        "cls: Clear the screen"
-        clear_screen()
-        return
-
-    def do_clear(self, arg):
-        "clear: Clear the screen"
-        self.do_cls(arg)
+    def do_clearScreen(self, arg):
+        "clearScreen: Clear the screen"
+        clearScreen()
 
     def do_quit(self, arg):
         "quit: Exit the TFTP client"
@@ -230,18 +226,6 @@ Options:
     else:
         shell = TFTPCmdShell(server_addr)
         shell.cmdloop()
-#:
-
-
-def clear_screen():
-    """
-    https://stackoverflow.com/questions/4553129/when-to-use-os-name-sys-platform-or-platform-system
-    """
-    match os.name:
-        case 'nt':      # Windows (excepto Win9X)
-            subprocess.run(['cls'], shell=True)
-        case 'posix':   # Unixes e compatíveis como, por exemplo, macOS e WSL
-            subprocess.run(['clear'])
 #:
 
 

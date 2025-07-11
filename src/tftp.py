@@ -1,24 +1,31 @@
 """
 TFTPy is a simple implementation of the TFTP protocol that can be used to
  transfer files between a client and a server.
+
 This module is a common repository for the TFTP client and server
  implementations.
+
 It handles all TFTP protocol details, such as packet formatting, error handling,
  and file transfer logic.
+ 
 It is not intended to be run directly, but rather imported by the client and
  server modules.
 
-# Successfully tested on the following platforms:
-#    - Windows 10 22H2 with Python 3.12.1
-#    - Linux Mint 21.2 with Python 3.12.1
+Successfully tested on the following platforms:
+    - Windows 10 22H2 with Python 3.12.1
+    - Linux Mint 21.2 with Python 3.12.1
 
-# Libraries used (all from Python's standard library, no external libraries
-#  installed via pip were used):
-#    - sys
-#    - time
-#    - argparse
-#    - os
-#    - subprocess
+Libraries used (all from Python's standard library):
+    re
+    os
+    time
+    struct
+    socket
+    string
+    subprocess
+    ipaddress
+    enum
+    socket
 
 A virtual environment (.venv) was used to isolate the project.
 
@@ -28,15 +35,17 @@ Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
 """
 
+import re
 import os
-from enum import Enum
 import time
 import struct
 import socket
-from socket import socket, AF_INET, SOCK_DGRAM
-import ipaddress
 import string
-import re
+# import locale     Because of dir in windows, but ended not using it
+import subprocess
+import ipaddress
+from enum import Enum
+from socket import socket, AF_INET, SOCK_DGRAM
 
 # ##############################################################################
 #
@@ -103,12 +112,12 @@ def server_send_dir(transfer_sock, client_addr, server_dir):
     """
     Sends the local directory listing to the client, responding to a dir request
     """
-
     if os.name == 'nt':
-        # Windows
         cmd = f'dir "{server_dir}"'
+        # listing = os.popen(cmd, encoding='cp850').read().encode('utf-8') <--rabbit hole in progress!!
+        # raw_listing = raw_listing.replace(b'\xa0', b' ')
+        # listing = raw_listing.decode('cp1252').encode('utf-8')
     else:
-        # Linux/macOS
         cmd = f'ls -lh "{server_dir}"'
     listing = os.popen(cmd).read().encode('utf-8')
 
@@ -276,8 +285,8 @@ def server_receive_file(transfer_sock, client_addr, local_file, remote_file):
 # GET_FILE e PUT_FILE, alterados, passando de filename para remote_file, local_file
 def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
     """
-    Get the remote file given by `remote_file` thougth a TFTP RRQ
-    connection to remote server at `server_addr`.
+    Get the remote file given by 'remote_file' thougth a TFTP RRQ
+    connection to remote server at 'server_addr'.
     """
     success = False
 
@@ -602,6 +611,13 @@ def is_ascii_printable(txt: str) -> bool:
     # ALTERNATIVA: return not set(txt) - set(string.printable)
 #:
 
+def clearScreen() -> None:
+    # os.system('cls' if os.name == 'nt' else 'clear')
+    if os.name == 'posix':
+        subprocess.run(['clear'])
+    elif os.name == 'nt':
+        subprocess.run(['cls'], shell = True)
+#:
 
 if __name__ == "__main__":
     pass
@@ -633,6 +649,7 @@ if __name__ == "__main__":
     #print(f"pack_err(2, 'Access violation'): {err}")
     #err_num, err_msg = unpack_err(err)
     #print(f"unpack_err(err): {err_num}, {err_msg}")
-    server_addr = ('127.0.0.1', 69)
-    client_get_file(server_addr, 'Projecto2.pdf')
-    client_put_file(server_addr, 'Proj2.pdf')
+#
+#   #server_addr = ('127.0.0.1', 69)
+    #client_get_file(server_addr, 'Projecto2.pdf')
+    #client_put_file(server_addr, 'Proj2.pdf')
