@@ -26,10 +26,12 @@ Libraries used (all from Python's standard library):
     ipaddress
     enum
     socket
+    tempfile
+    locale
 
 A virtual environment (.venv) was used to isolate the project.
 
-(c) 2025 João Galamba, Pedro Dores, Pedro Vieira
+(c) 2025 Pedro Dores, Pedro Vieira, based on code by João Galamba
 
 Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
@@ -41,7 +43,8 @@ import time
 import struct
 import socket
 import string
-# import locale     Because of dir in windows, but ended not using it
+import tempfile
+import locale
 import subprocess
 import ipaddress
 from enum import Enum
@@ -55,6 +58,7 @@ from socket import socket, AF_INET, SOCK_DGRAM
 
 MAX_DATA_LEN = 512       # in bytes
 DEFAULT_MODE = "octet"   # transfer mode (one of 'octet', 'netascii', 'mail')
+MAX_RETRIES = 5          # number of retries for a request before giving up
 INACTIVITY_TIMEOUT = 60  # Não encontro no vídeo do professor, escolhi 60 segundos
                          # como no servidor
 DEFAULT_BUFFER_SIZE = 8192
@@ -112,61 +116,31 @@ def server_send_dir(transfer_sock, client_addr, server_dir):
     """
     Sends the local directory listing to the client, responding to a dir request
     """
+    import locale
     if os.name == 'nt':
         cmd = f'dir "{server_dir}"'
-        # listing = os.popen(cmd, encoding='cp850').read().encode('utf-8') <--rabbit hole in progress!!
-        # raw_listing = raw_listing.replace(b'\xa0', b' ')
-        # listing = raw_listing.decode('cp1252').encode('utf-8')
+        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+        raw_listing = proc.stdout.read()
+        
+        raw_listing = raw_listing.replace(b'\xa0', b' ')
+        encoding = locale.getpreferredencoding()
+        listing = raw_listing.decode(encoding, errors='replace')
     else:
         cmd = f'ls -lh "{server_dir}"'
-    listing = os.popen(cmd).read().encode('utf-8')
+        listing = os.popen(cmd).read()
 
-    total_len = len(listing)
-    block_number = 1
-    offset = 0
+    with tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8') as tmp:
+        tmp.write(listing)
+        tmp_filename = tmp.name
 
     print(f"[{time.strftime('%H:%M:%S')}] DIR request from {client_addr} for '{server_dir}'")
 
-    while True:
-        data = listing[offset:offset + MAX_DATA_LEN]
-        dat_packet = pack_dat(block_number, data)
+    server_send_file(transfer_sock, client_addr, tmp_filename, "dir_listing.txt")
 
-        while True:
-            transfer_sock.sendto(dat_packet, client_addr)
-            try:
-                transfer_sock.settimeout(INACTIVITY_TIMEOUT)
-                packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
-            except TimeoutError:
-                print(f"Timeout waiting for ACK for block {block_number} from {client_addr}. Aborting transfer.")
-                return
-            except Exception as e:
-                print(f"Error during DIR transfer: {e}")
-                return
-
-            opcode = unpack_opcode(packet)
-            if opcode == TFTPOpcode.ACK:
-                ack_block = unpack_ack(packet)
-                if ack_block == block_number:
-                    break
-                else:
-                    print(f"Invalid ACK block number: {ack_block} (expected {block_number})")
-                    continue
-            elif opcode == TFTPOpcode.ERROR:
-                err_code, err_msg = unpack_err(packet)
-                print(f"TFTP error from client: {err_code} {err_msg}")
-                return
-            else:
-                print(f"Invalid packet opcode: {opcode}. Expecting ACK.")
-                continue
-
-        offset += MAX_DATA_LEN
-        block_number += 1
-
-        if len(data) < MAX_DATA_LEN:
-            break
-
-    print(f"[{time.strftime('%H:%M:%S')}] DIR listing sent to {client_addr} ({total_len} bytes)")
-    return total_len
+    try:
+        os.remove(tmp_filename)
+    except Exception as e:
+        print(f"Could not remove temp file: {e}")
 #:
 
 
@@ -180,14 +154,14 @@ def server_send_file(transfer_sock, client_addr, local_file, remote_file):
         while True:
             data_block = f.read(MAX_DATA_LEN)
             dat_packet = pack_dat(block_number, data_block)
-            while True:
+            for attempt in range(MAX_RETRIES):
                 transfer_sock.sendto(dat_packet, client_addr)
                 try:
                     transfer_sock.settimeout(INACTIVITY_TIMEOUT)
                     packet, _ = transfer_sock.recvfrom(DEFAULT_BUFFER_SIZE)
                 except TimeoutError:
-                    print(f"Timeout waiting for ACK for block {block_number} from {client_addr}. Aborting transfer.")
-                    return
+                    print(f"Timeout waiting for ACK for block {block_number} (attempt {attempt+1}) from {client_addr}. Retrying...")
+                    continue
                 except Exception as e:
                     print(f"Error during RRQ transfer: {e}")
                     return
@@ -207,6 +181,9 @@ def server_send_file(transfer_sock, client_addr, local_file, remote_file):
                 else:
                     print(f"Invalid packet opcode: {op}. Expecting ACK.")
                     continue
+            else:
+                print(f"Max retries reached for block {block_number}. Aborting transfer.")
+                return
 
             if len(data_block) < MAX_DATA_LEN:
                 break
@@ -253,10 +230,10 @@ def server_receive_file(transfer_sock, client_addr, local_file, remote_file):
                         # Repeated block, lost ACK, just resend the ACK, don't write
                         ack_packet = pack_ack(data_block_num)
                         transfer_sock.sendto(ack_packet, client_addr)
-                        # Não incrementa next_block_number, não escreve
+                        # Don't increment next_block_number, don't write
                     else:
                         print(f"Invalid DATA block number: {data_block_num} (expected {next_block_number})")
-                        continue  # Espera bloco correto
+                        continue  # Wait for correct bblock
                 elif op == TFTPOpcode.ERROR:
                     err_code, err_msg = unpack_err(packet)
                     print(f"TFTP error from client: {err_code} {err_msg}")
@@ -344,49 +321,73 @@ def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str
 
 
 def client_put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
-    """
-    Put the local file given by `filename` through a TFTP WRQ
-    connection to remote server at `server_addr`.
-    """
     if local_file is None:
         local_file = remote_file
 
-    # The TFTP in /etc/default/tftpd-hpa defaults to TFTP_OPTIONS="--secure"
-    #  meaning that it only allows puts of existing files, returning error 1!!
-    # Change to TFTP_OPTIONS="--secure --create --umask 022"
     with socket(AF_INET, SOCK_DGRAM) as sock:
         sock.settimeout(INACTIVITY_TIMEOUT)
         with open(local_file, 'rb') as in_file:
             wrq = pack_wrq(remote_file)
-            sock.sendto(wrq, server_addr)
+            
+            for attempt in range(MAX_RETRIES):
+                sock.sendto(wrq, server_addr)
+                try:
+                    packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                except TimeoutError:
+                    print(f"Timeout waiting for ACK 0 (attempt {attempt+1}). Retrying WRQ...")
+                    continue
+                opcode = unpack_opcode(packet)
+                if opcode == TFTPOpcode.ACK:
+                    block_number = unpack_ack(packet)
+                    if block_number == 0:
+                        break 
+                elif opcode == TFTPOpcode.ERROR:
+                    err_code, err_msg = unpack_err(packet)
+                    print(f"TFTP error from server: {err_code} {err_msg}")
+                    return
+            else:
+                print("Max retries reached for WRQ. Aborting transfer.")
+                return
 
             next_block_number = 1
             while True:
-                packet, server_address = sock.recvfrom(DEFAULT_BUFFER_SIZE)
-                opcode = unpack_opcode(packet)
+                data = in_file.read(MAX_DATA_LEN)
+                if not data:
+                    break  # End of file
 
-                if opcode == TFTPOpcode.ACK:
-                    block_number = unpack_ack(packet)
-
-                    if block_number != next_block_number - 1:
-                        error_msg = f'Invalid block number: {block_number}'
-                        raise ProtocolError(error_msg)
-
-                    data = in_file.read(MAX_DATA_LEN)
-                    if not data:
-                        return block_number * DEFAULT_BUFFER_SIZE + len(data)
-
-                    dat_packet = pack_dat(next_block_number, data)
+                dat_packet = pack_dat(next_block_number, data)
+                for attempt in range(MAX_RETRIES):
                     sock.sendto(dat_packet, server_address)
-                    next_block_number += 1
-
-                elif opcode == TFTPOpcode.ERROR:
-                    err_code, err_msg = unpack_err(packet)
-                    raise Err(err_code, err_msg)
-
+                    try:
+                        sock.settimeout(INACTIVITY_TIMEOUT)
+                        ack_packet, _ = sock.recvfrom(DEFAULT_BUFFER_SIZE)
+                    except TimeoutError:
+                        print(f"Timeout waiting for ACK for block {next_block_number} (attempt {attempt+1}). Retrying...")
+                        continue
+                    ack_opcode = unpack_opcode(ack_packet)
+                    if ack_opcode == TFTPOpcode.ACK:
+                        ack_block = unpack_ack(ack_packet)
+                        if ack_block == next_block_number:
+                            break  # ACK correto, prouceed to next block
+                        else:
+                            print(f"Invalid ACK block number: {ack_block} (expected {next_block_number})")
+                            continue
+                    elif ack_opcode == TFTPOpcode.ERROR:
+                        err_code, err_msg = unpack_err(ack_packet)
+                        print(f"TFTP error from server: {err_code} {err_msg}")
+                        return
+                    else:
+                        print(f"Invalid packet opcode: {ack_opcode}. Expecting ACK.")
+                        continue
                 else:
-                    error_msg = f'Invalid packet opcode: {opcode}. Expecting {TFTPOpcode.ACK=}'
-                    raise ProtocolError(error_msg)
+                    print(f"Max retries reached for block {next_block_number}. Aborting transfer.")
+                    return
+
+                next_block_number += 1
+
+            total_bytes = next_block_number * DEFAULT_BUFFER_SIZE + len(data)
+            print(f"File '{local_file}' sent successfully.")
+            return total_bytes
 #:
 
 
@@ -493,7 +494,7 @@ def unpack_err(packet: bytes) -> tuple[int, str]:
     opcode, error_num, error_msg = struct.unpack(fmt, packet)
     if opcode != TFTPOpcode.ERROR.value:
         raise TFTPValueError(f"Invalid opcode: {opcode}")
-    return error_num, error_msg[:-1]
+    return error_num, error_msg[:-1].decode()
 #:
 
 

@@ -17,13 +17,15 @@ Libraries used (all from Python's standard library):
     time
     socket
     threading
+    tempfile
+    locale
 
 External libraries used requiring pip install:
     docopt
 
 A virtual environment (.venv) was used to isolate the project.
 
-(c) 2025 João Galamba, Pedro Dores, Pedro Vieira
+(c) 2025 Pedro Dores, Pedro Vieira, based on code by João Galamba
 
 Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
@@ -32,6 +34,8 @@ Source code licensed under GPLv3. Please refer to:
 import os
 import sys
 import time
+import locale
+import tempfile
 from docopt import docopt
 from socket import socket, AF_INET, SOCK_DGRAM, SOL_SOCKET, SO_REUSEADDR, gethostname
 # import socketserver   Parece mais difícil de lidar com portos efémeros

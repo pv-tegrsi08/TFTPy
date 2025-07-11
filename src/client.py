@@ -24,7 +24,7 @@ External libraries used requiring pip install:
 
 A virtual environment (.venv) was used to isolate the project.
 
-(c) 2025 João Galamba, Pedro Dores, Pedro Vieira
+(c) 2025 Pedro Dores, Pedro Vieira, based on code by João Galamba
 
 Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
@@ -70,8 +70,9 @@ class TFTPCmdShell(cmd.Cmd):
             return
 
         try:
-            bytes_received = client_get_file(self.server_addr, remote_file, local_file)
-            print(f"Received file '{local_file}' {bytes_received} bytes.")
+            client_get_file(self.server_addr, remote_file, local_file)
+            file_size = os.path.getsize(local_file)
+            print(f"Received file '{local_file}' {file_size} bytes.")
         except Err as e:
             if e.error_code == 1:
                 print("File not found.")
@@ -100,8 +101,9 @@ class TFTPCmdShell(cmd.Cmd):
             return
 
         try:
-            bytes_sent = client_put_file(self.server_addr, remote_file, local_file)
-            print(f"Sent file '{local_file}' {bytes_sent} bytes.")
+            client_put_file(self.server_addr, remote_file, local_file)
+            file_size = os.path.getsize(local_file)
+            print(f"Sent file '{local_file}' {file_size} bytes.")
         except Err as e:
             if e.error_code == 1:
                 print("File not found.")
