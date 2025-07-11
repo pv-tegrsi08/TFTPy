@@ -22,16 +22,18 @@ Libraries used (all from Python's standard library):
     struct
     socket
     string
+    tempfile
+    locale
     subprocess
     ipaddress
     enum
     socket
-    tempfile
-    locale
 
 A virtual environment (.venv) was used to isolate the project.
 
 (c) 2025 Pedro Dores, Pedro Vieira, based on code by João Galamba
+
+Submission date: 2025/07/11
 
 Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
@@ -59,8 +61,7 @@ from socket import socket, AF_INET, SOCK_DGRAM
 MAX_DATA_LEN = 512       # in bytes
 DEFAULT_MODE = "octet"   # transfer mode (one of 'octet', 'netascii', 'mail')
 MAX_RETRIES = 5          # number of retries for a request before giving up
-INACTIVITY_TIMEOUT = 60  # Não encontro no vídeo do professor, escolhi 60 segundos
-                         # como no servidor
+INACTIVITY_TIMEOUT = 20  # Não encontro no vídeo do professor Galamba
 DEFAULT_BUFFER_SIZE = 8192
 
 # TFTP message opcodes
@@ -116,7 +117,6 @@ def server_send_dir(transfer_sock, client_addr, server_dir):
     """
     Sends the local directory listing to the client, responding to a dir request
     """
-    import locale
     if os.name == 'nt':
         cmd = f'dir "{server_dir}"'
         proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
@@ -187,7 +187,8 @@ def server_send_file(transfer_sock, client_addr, local_file, remote_file):
 
             if len(data_block) < MAX_DATA_LEN:
                 break
-            block_number += 1
+            block_number = (block_number) % 65535 + 1
+
     print(f"[{time.strftime('%H:%M:%S')}] Sent file '{remote_file}' to {client_addr}")
 #:
 
@@ -260,7 +261,7 @@ def server_receive_file(transfer_sock, client_addr, local_file, remote_file):
 # ##############################################################################
 
 # GET_FILE e PUT_FILE, alterados, passando de filename para remote_file, local_file
-def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
+def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str = None):
     """
     Get the remote file given by 'remote_file' thougth a TFTP RRQ
     connection to remote server at 'server_addr'.
@@ -320,7 +321,7 @@ def client_get_file(server_addr: INET4Address, remote_file: str, local_file: str
 #:
 
 
-def client_put_file(server_addr: INET4Address, remote_file: str, local_file: str = None) -> int:
+def client_put_file(server_addr: INET4Address, remote_file: str, local_file: str = None):
     if local_file is None:
         local_file = remote_file
 
@@ -383,11 +384,9 @@ def client_put_file(server_addr: INET4Address, remote_file: str, local_file: str
                     print(f"Max retries reached for block {next_block_number}. Aborting transfer.")
                     return
 
-                next_block_number += 1
+                next_block_number = (next_block_number) % 65535 + 1
 
-            total_bytes = next_block_number * DEFAULT_BUFFER_SIZE + len(data)
             print(f"File '{local_file}' sent successfully.")
-            return total_bytes
 #:
 
 

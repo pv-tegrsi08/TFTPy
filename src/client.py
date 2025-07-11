@@ -26,6 +26,8 @@ A virtual environment (.venv) was used to isolate the project.
 
 (c) 2025 Pedro Dores, Pedro Vieira, based on code by João Galamba
 
+Submission date: 2025/07/11
+
 Source code licensed under GPLv3. Please refer to:
     https://www.gnu.org/licenses/gpl-3.0.en.html
 """
